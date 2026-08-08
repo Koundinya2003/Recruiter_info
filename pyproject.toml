@@ -1,0 +1,45 @@
+[project]
+name = "recruiter-outreach-intelligence"
+version = "0.1.0"
+description = "Research and outreach intelligence tool: find the right recruiter to contact about an actively-hiring, relevant role."
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "S"]
+ignore = [
+    "E501",   # line length is handled by the formatter
+    "B008",   # FastAPI Depends() in defaults is the documented idiom
+    "SIM108", # ternaries are not always more readable
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106", "S311"]
+"app/db/seed.py" = ["S311"]  # random is used for demo data, not for security
+"scripts/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_configs = true
+plugins = []
+exclude = "(^\\.venv/|^migrations/)"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "integration: tests that require a live PostgreSQL database",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
