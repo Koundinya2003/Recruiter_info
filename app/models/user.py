@@ -1,20 +1,18 @@
-"""User and the résumé/profile context used by the AI drafter.
-
-Personal details live here, in the database, never in application logic.
-"""
+"""The single local owner of the workspace, and their search defaults."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
-    from app.models.company import Company
+    from app.models.application import Application
+    from app.models.search import JobSearch
 
 
 class User(Base, TimestampMixin):
@@ -28,7 +26,10 @@ class User(Base, TimestampMixin):
     profile: Mapped[UserProfile | None] = relationship(
         back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
-    companies: Mapped[list[Company]] = relationship(
+    searches: Mapped[list[JobSearch]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    applications: Mapped[list[Application]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -37,7 +38,11 @@ class User(Base, TimestampMixin):
 
 
 class UserProfile(Base, TimestampMixin):
-    """Résumé context. Everything the email generator is allowed to draw on."""
+    """Search defaults, used to pre-fill a search and to break relevance ties.
+
+    Deliberately small: this product is a search-and-tracking workspace, not a
+    résumé manager.
+    """
 
     __tablename__ = "user_profile"
 
@@ -48,22 +53,13 @@ class UserProfile(Base, TimestampMixin):
 
     full_name: Mapped[str | None] = mapped_column(String(200))
     headline: Mapped[str | None] = mapped_column(String(300))
-    education: Mapped[str | None] = mapped_column(Text)
-    experience: Mapped[str | None] = mapped_column(Text)
-    years_experience: Mapped[float | None] = mapped_column()
+    years_experience: Mapped[float | None] = mapped_column(Float)
 
+    default_titles: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    default_locations: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
     skills: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
-    target_roles: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
-    target_industries: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
-    preferred_locations: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
 
-    portfolio_url: Mapped[str | None] = mapped_column(String(500))
-    github_url: Mapped[str | None] = mapped_column(String(500))
     linkedin_url: Mapped[str | None] = mapped_column(String(500))
-
-    resume_filename: Mapped[str | None] = mapped_column(String(300))
-    resume_text: Mapped[str | None] = mapped_column(Text)
-
     extra: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="profile")

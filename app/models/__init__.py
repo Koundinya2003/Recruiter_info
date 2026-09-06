@@ -5,31 +5,23 @@ which is what Alembic autogeneration and the test fixtures rely on.
 """
 
 from app.db.base import Base
+from app.models.application import Application, ApplicationEvent
 from app.models.company import Company
-from app.models.config import ScoringConfig, TaxonomyTerm
-from app.models.crawl import CrawlRun, SourceRecord
+from app.models.contact import Contact, JobContact
 from app.models.job import Job
-from app.models.outreach import OutreachEvent, OutreachLead
-from app.models.recruiter import Contact, JobRecruiterLink, Recruiter
-from app.models.signal import HiringSignal
+from app.models.search import JobSearch, SearchRun
 from app.models.user import User, UserProfile
-from app.models.verification import EmailVerification
 
 __all__ = [
+    "Application",
+    "ApplicationEvent",
     "Base",
     "Company",
     "Contact",
-    "CrawlRun",
-    "EmailVerification",
-    "HiringSignal",
     "Job",
-    "JobRecruiterLink",
-    "OutreachEvent",
-    "OutreachLead",
-    "Recruiter",
-    "ScoringConfig",
-    "SourceRecord",
-    "TaxonomyTerm",
+    "JobContact",
+    "JobSearch",
+    "SearchRun",
     "User",
     "UserProfile",
 ]
