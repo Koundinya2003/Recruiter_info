@@ -306,44 +306,38 @@ def validate_posting(
     )
     checks[ValidationCheck.STILL_ACTIVE.value] = active_outcome.value
 
-    common = {
-        "checks": checks,
-        "http_status": response.status_code,
-        "final_url": response.final_url,
-        "posting_company": stated_company,
-        "valid_through": valid_through,
-    }
+    def outcome(status: ValidationStatus, reason: str) -> ValidationOutcome:
+        return ValidationOutcome(
+            status=status,
+            reason=reason,
+            checks=checks,
+            http_status=response.status_code,
+            final_url=response.final_url,
+            posting_title=title,
+            posting_company=stated_company,
+            valid_through=valid_through,
+        )
 
     if company_outcome is CheckOutcome.FAIL:
-        return ValidationOutcome(
-            status=ValidationStatus.MISMATCH, reason=company_reason, **common
-        )
+        return outcome(ValidationStatus.MISMATCH, company_reason)
     if active_outcome is CheckOutcome.FAIL:
-        return ValidationOutcome(status=ValidationStatus.EXPIRED, reason=active_reason, **common)
+        return outcome(ValidationStatus.EXPIRED, active_reason)
 
     if company_outcome is CheckOutcome.PASS and active_outcome is CheckOutcome.PASS:
-        return ValidationOutcome(
-            status=ValidationStatus.VALID,
-            reason=f"{active_reason}. {company_reason}.",
-            **common,
-        )
+        return outcome(ValidationStatus.VALID, f"{active_reason}. {company_reason}.")
 
     if source.is_first_party:
         # The company's own live API listed it; the page just did not give us
         # enough to re-confirm independently.
-        return ValidationOutcome(
-            status=ValidationStatus.VALID,
-            reason=(
-                f"Listed as open by {company_name}'s own job board API, and the posting "
-                f"page loads. {active_reason}."
-            ),
-            **common,
+        return outcome(
+            ValidationStatus.VALID,
+            f"Listed as open by {company_name}'s own job board API, and the posting "
+            f"page loads. {active_reason}.",
         )
 
-    return ValidationOutcome(
-        status=ValidationStatus.LIKELY_VALID,
-        reason=f"The posting page loads. {active_reason}. {company_reason}.",
-        **common,
+    return outcome(
+        ValidationStatus.LIKELY_VALID,
+        f"The posting page loads. {active_reason}. {company_reason}.",
     )
 
 

@@ -83,152 +83,101 @@ class APIClient:
 
     # -- endpoints -----------------------------------------------------------
     def health(self) -> dict:
-        return self.get("/admin/health")
+        return self.get("/health")
 
-    def dashboard(self, limit: int = 15, include_demo: bool = True) -> dict:
-        return self.get("/dashboard", limit=limit, include_demo=include_demo)
+    def dashboard(self, limit: int = 8) -> dict:
+        return self.get("/dashboard", limit=limit)
 
-    def contact_today(self, **filters: Any) -> list[dict]:
-        return self.get("/outreach/contact-today", **filters)
+    # --- Search -------------------------------------------------------------
+    def parse_query(self, query: str, use_llm: bool = True) -> dict:
+        return self.post("/search/parse", json={"query": query, "use_llm": use_llm})
 
-    def companies(self, **filters: Any) -> list[dict]:
-        return self.get("/companies", **filters)
+    def run_search(self, payload: dict) -> dict:
+        return self.post("/search", json=payload)
 
-    def company(self, company_id: int) -> dict:
-        return self.get(f"/companies/{company_id}")
+    def search_jobs(self, search_id: int) -> list[dict]:
+        return self.get(f"/search/{search_id}/jobs")
 
-    def create_company(self, payload: dict) -> dict:
-        return self.post("/companies", json=payload)
+    def search_history(self, limit: int = 20) -> list[dict]:
+        return self.get("/search/history", limit=limit)
 
-    def update_company(self, company_id: int, payload: dict) -> dict:
-        return self.patch(f"/companies/{company_id}", json=payload)
+    def search_run(self, run_id: int) -> dict:
+        return self.get(f"/search/runs/{run_id}")
 
-    def delete_company(self, company_id: int) -> None:
-        self.delete(f"/companies/{company_id}")
+    def delete_search(self, search_id: int) -> dict:
+        return self.delete(f"/search/{search_id}")
 
-    def scan_company(self, company_id: int, payload: dict | None = None) -> dict:
-        return self.post(f"/companies/{company_id}/scan", json=payload or {})
+    def sources(self) -> list[dict]:
+        return self.get("/search/sources")
 
-    def pause_company(self, company_id: int) -> dict:
-        return self.post(f"/companies/{company_id}/pause")
-
-    def resume_company(self, company_id: int) -> dict:
-        return self.post(f"/companies/{company_id}/resume")
-
-    def company_history(self, company_id: int) -> list[dict]:
-        return self.get(f"/companies/{company_id}/history")
-
+    # --- Jobs ---------------------------------------------------------------
     def jobs(self, **filters: Any) -> list[dict]:
         return self.get("/jobs", **filters)
 
     def job(self, job_id: int) -> dict:
         return self.get(f"/jobs/{job_id}")
 
-    def rescore_jobs(self, company_id: int | None = None) -> dict:
-        return self.post("/jobs/rescore", company_id=company_id)
+    def job_counts(self) -> dict:
+        return self.get("/jobs/count")
 
-    def recruiters(self, **filters: Any) -> list[dict]:
-        return self.get("/recruiters", **filters)
+    def update_job(self, job_id: int, payload: dict) -> dict:
+        return self.patch(f"/jobs/{job_id}", json=payload)
 
-    def recruiter(self, recruiter_id: int) -> dict:
-        return self.get(f"/recruiters/{recruiter_id}")
+    def revalidate_job(self, job_id: int) -> dict:
+        return self.post(f"/jobs/{job_id}/revalidate")
 
-    def create_recruiter(self, payload: dict) -> dict:
-        return self.post("/recruiters", json=payload)
+    def delete_job(self, job_id: int) -> dict:
+        return self.delete(f"/jobs/{job_id}")
 
-    def verify_recruiter_email(self, recruiter_id: int) -> dict:
-        return self.post(f"/recruiters/{recruiter_id}/verify-email")
+    # --- Contacts -----------------------------------------------------------
+    def contacts(self, **filters: Any) -> list[dict]:
+        return self.get("/contacts", **filters)
 
-    def do_not_contact(self, recruiter_id: int, reason: str | None = None) -> dict:
-        return self.post(f"/recruiters/{recruiter_id}/do-not-contact", json={"reason": reason})
+    def job_contacts(self, job_id: int) -> list[dict]:
+        return self.get(f"/contacts/job/{job_id}")
 
-    def clear_do_not_contact(self, recruiter_id: int) -> dict:
-        return self.delete(f"/recruiters/{recruiter_id}/do-not-contact")
+    def discover_contacts(self, job_id: int) -> list[dict]:
+        return self.post(f"/contacts/job/{job_id}/discover")
 
-    def leads(self, **filters: Any) -> list[dict]:
-        return self.get("/outreach/leads", **filters)
+    def verify_contact_email(self, contact_id: int) -> dict:
+        return self.post(f"/contacts/{contact_id}/verify-email")
 
-    def lead(self, lead_id: int) -> dict:
-        return self.get(f"/outreach/leads/{lead_id}")
+    def archive_contact(self, contact_id: int) -> dict:
+        return self.delete(f"/contacts/{contact_id}")
 
-    def create_lead(self, recruiter_id: int, job_id: int | None = None) -> dict:
+    # --- Applications -------------------------------------------------------
+    def applications(self, **filters: Any) -> list[dict]:
+        return self.get("/applications", **filters)
+
+    def application(self, application_id: int) -> dict:
+        return self.get(f"/applications/{application_id}")
+
+    def create_application(self, payload: dict) -> dict:
+        return self.post("/applications", json=payload)
+
+    def update_application(self, application_id: int, payload: dict) -> dict:
+        return self.patch(f"/applications/{application_id}", json=payload)
+
+    def mark_applied(self, application_id: int) -> dict:
+        return self.post(f"/applications/{application_id}/mark-applied")
+
+    def mark_outreach_sent(self, application_id: int, channel: str = "EMAIL_SENT") -> dict:
         return self.post(
-            "/outreach/leads", json={"recruiter_id": recruiter_id, "job_id": job_id}
+            f"/applications/{application_id}/mark-outreach-sent", channel=channel
         )
 
-    def generate_draft(self, lead_id: int, reason: str | None = None, force_offline: bool = False) -> dict:
-        return self.post(
-            f"/outreach/leads/{lead_id}/draft",
-            json={"reason": reason, "force_offline": force_offline},
-        )
+    def application_history(self, application_id: int) -> list[dict]:
+        return self.get(f"/applications/{application_id}/history")
 
-    def edit_draft(self, lead_id: int, subject: str, body: str) -> dict:
-        return self.patch(f"/outreach/leads/{lead_id}/draft", json={"subject": subject, "body": body})
+    def delete_application(self, application_id: int) -> dict:
+        return self.delete(f"/applications/{application_id}")
 
-    def approve_lead(self, lead_id: int) -> dict:
-        return self.post(f"/outreach/leads/{lead_id}/approve")
-
-    def record_outreach(self, lead_id: int, note: str | None = None) -> dict:
-        return self.post(f"/outreach/leads/{lead_id}/record-outreach", json={"note": note})
-
-    def follow_up(self, lead_id: int, note: str | None = None) -> dict:
-        return self.post(f"/outreach/leads/{lead_id}/follow-up", json={"note": note})
-
-    def record_response(self, lead_id: int, response: str, note: str | None = None) -> dict:
-        return self.post(
-            f"/outreach/leads/{lead_id}/response", json={"response": response, "note": note}
-        )
-
-    def change_status(self, lead_id: int, status: str, note: str | None = None) -> dict:
-        return self.post(f"/outreach/leads/{lead_id}/status", json={"status": status, "note": note})
-
-    def add_note(self, lead_id: int, note: str) -> dict:
-        return self.post(f"/outreach/leads/{lead_id}/notes", json={"note": note})
-
-    def lead_history(self, lead_id: int) -> list[dict]:
-        return self.get(f"/outreach/leads/{lead_id}/history")
-
+    # --- Profile ------------------------------------------------------------
     def profile(self) -> dict:
-        return self.get("/settings/profile")
+        return self.get("/profile")
 
     def save_profile(self, payload: dict) -> dict:
-        return self.put("/settings/profile", json=payload)
-
-    def taxonomy(self, kind: str | None = None) -> list[dict]:
-        return self.get("/settings/taxonomy", kind=kind)
-
-    def add_term(self, payload: dict) -> dict:
-        return self.post("/settings/taxonomy", json=payload)
-
-    def delete_term(self, term_id: int) -> None:
-        self.delete(f"/settings/taxonomy/{term_id}")
-
-    def reset_taxonomy(self) -> dict:
-        return self.post("/settings/taxonomy/reset")
-
-    def scoring(self) -> dict:
-        return self.get("/settings/scoring")
-
-    def save_scoring(self, payload: dict) -> dict:
-        return self.put("/settings/scoring", json=payload)
-
-    def reset_scoring(self) -> dict:
-        return self.post("/settings/scoring/reset")
-
-    def admin_overview(self) -> dict:
-        return self.get("/admin/overview")
-
-    def crawls(self, **filters: Any) -> list[dict]:
-        return self.get("/admin/crawls", **filters)
-
-    def crawl_records(self, crawl_id: int, accepted: bool | None = None) -> list[dict]:
-        return self.get(f"/admin/crawls/{crawl_id}/records", accepted=accepted)
-
-    def verifications(self, limit: int = 50) -> list[dict]:
-        return self.get("/admin/verifications", limit=limit)
-
-    def search(self, q: str) -> dict:
-        return self.get("/search", q=q)
+        return self.put("/profile", json=payload)
 
 
 def get_client() -> APIClient:

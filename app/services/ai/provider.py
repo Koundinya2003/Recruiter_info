@@ -1,14 +1,16 @@
 """LLM provider abstraction.
 
-The application talks to :class:`LLMProvider`, never to a vendor SDK. Two
-implementations ship:
+The application talks to :class:`LLMProvider`, never to a vendor SDK.
+:class:`OpenAICompatibleProvider` speaks to any OpenAI-compatible
+``/chat/completions`` endpoint; it defaults to OpenRouter, and pointing
+``OPENROUTER_BASE_URL`` at OpenAI, Together or a local gateway changes nothing
+else.
 
-* :class:`OpenAICompatibleProvider` — any OpenAI-compatible ``/chat/completions``
-  endpoint. Defaults to OpenRouter; point ``OPENROUTER_BASE_URL`` at OpenAI,
-  Together, or a local gateway and nothing else changes.
-* :class:`TemplateProvider` — a deterministic, offline drafter used when no API
-  key is configured, so email generation works out of the box (and in tests)
-  without a network call or a bill.
+A model is used for exactly one thing here: helping to read a free-text search
+request. It never writes a message on the user's behalf, and it is never the
+source of a job, a company or a contact. When no key is configured
+:func:`get_provider` returns ``None`` and the rule-based parser is used alone —
+which is why the product works fully offline.
 """
 
 from __future__ import annotations
@@ -140,99 +142,14 @@ class OpenAICompatibleProvider(LLMProvider):
         )
 
 
-class TemplateProvider(LLMProvider):
-    """Offline fallback: fills a plain, honest template. No network, no key.
+def get_provider() -> LLMProvider | None:
+    """The configured provider, or ``None`` when no key is set.
 
-    The template only ever restates facts passed in through the prompt context,
-    which is precisely the property we want — it cannot invent a shared
-    connection or an achievement, because it has no generative capacity at all.
+    Returning ``None`` rather than a stand-in is deliberate: callers must decide
+    what to do without a model, and the honest answer here is "use the rules".
     """
-
-    name = "offline_template"
-
-    @property
-    def model(self) -> str:
-        return "offline-template-v1"
-
-    def complete(
-        self, messages: list[ChatMessage], *, max_tokens: int | None = None, temperature: float = 0.4
-    ) -> Completion:
-        context: dict[str, Any] = {}
-        for message in messages:
-            if message.role == "user":
-                marker = "CONTEXT_JSON:"
-                if marker in message.content:
-                    blob = message.content.split(marker, 1)[1].strip()
-                    try:
-                        context = json.loads(blob)
-                    except json.JSONDecodeError:
-                        context = {}
-        return Completion(
-            text=render_template_email(context),
-            model=self.model,
-            provider=self.name,
-            fallback=True,
-        )
-
-
-def render_template_email(context: dict[str, Any]) -> str:
-    """Render the offline draft. Uses only supplied facts."""
-    recruiter = context.get("recruiter_first_name") or "there"
-    company = context.get("company_name") or "your team"
-    role = context.get("job_title") or "the open role"
-    job_url = context.get("job_url") or ""
-    candidate = context.get("candidate_name") or ""
-    headline = context.get("candidate_headline") or ""
-    skills = context.get("matched_skills") or []
-    highlights = context.get("relevant_experience") or ""
-    portfolio = context.get("portfolio_url") or ""
-    linkedin = context.get("linkedin_url") or ""
-    reason = context.get("reason_for_reaching_out") or ""
-
-    subject = f"{role} at {company} — {candidate}" if candidate else f"{role} at {company}"
-
-    lines = [f"Subject: {subject}", "", f"Hi {recruiter},", ""]
-
-    opener = f"I saw the {role} opening at {company}"
-    if job_url:
-        opener += f" ({job_url})"
-    opener += " and wanted to introduce myself."
-    lines.append(opener)
-    lines.append("")
-
-    if headline:
-        lines.append(f"I'm {candidate}, {headline}." if candidate else f"{headline}.")
-    if highlights:
-        lines.append(highlights.strip())
-    if skills:
-        lines.append(
-            "The overlap I see with the role: " + ", ".join(str(s) for s in skills[:4]) + "."
-        )
-    if reason:
-        lines.append(reason.strip())
-
-    lines.append("")
-    lines.append(
-        "If it would help, I can send a short summary of the most relevant work. "
-        "Happy to answer any questions."
-    )
-    lines.append("")
-    lines.append("Thanks for your time,")
-    if candidate:
-        lines.append(candidate)
-    contact_line = " | ".join(p for p in [portfolio, linkedin] if p)
-    if contact_line:
-        lines.append(contact_line)
-
-    return "\n".join(lines)
-
-
-def get_provider(force_offline: bool = False) -> LLMProvider:
-    """Return the configured provider, or the offline drafter when unavailable."""
-    if force_offline:
-        return TemplateProvider()
     provider = OpenAICompatibleProvider()
     if not provider.available():
-        log.info("ai.no_key_configured", fallback="offline_template")
-        return TemplateProvider()
+        log.debug("ai.no_key_configured")
+        return None
     return provider

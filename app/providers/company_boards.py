@@ -190,7 +190,7 @@ class CompanyBoardProvider(JobProvider):
                 except FetchBlocked as exc:
                     log.debug("board.blocked", company=company, platform=platform, reason=exc.reason)
                     continue
-                except Exception:  # noqa: BLE001 - a 404 is the expected outcome here
+                except Exception:  # noqa: BLE001, S112 - a 404 here means "no board", not an error
                     continue
                 if _extract_board_jobs(platform, payload):
                     self.confirmed[key] = board

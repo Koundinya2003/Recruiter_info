@@ -1,8 +1,10 @@
-"""A local HTTP server serving canned career-page / ATS responses.
+"""A local HTTP server serving canned job-source and career-page responses.
 
-The test-suite never touches a real website. This server stands in for one, so
-collector behaviour (including robots.txt handling and blocking responses) is
-exercised deterministically and offline.
+The test suite never touches a real website. This server stands in for one, so
+provider parsing, posting validation and contact discovery are all exercised
+deterministically and offline — including the awkward cases that matter most:
+a posting that has been closed, a page that belongs to a different company, and
+a path robots.txt puts off limits.
 """
 
 from __future__ import annotations
@@ -104,6 +106,180 @@ TEAM_PAGE_HTML = """<!doctype html>
 </body></html>
 """
 
+# --- Aggregator API payloads -------------------------------------------------
+
+THE_MUSE_JOBS: dict[str, Any] = {
+    "page": 0,
+    "page_count": 1,
+    "results": [
+        {
+            "id": 9001,
+            "name": "Associate Product Manager",
+            "type": "external",
+            "publication_date": "2026-08-20T09:00:00Z",
+            "contents": "<p>Own a slice of the roadmap. 0-2 years of experience.</p>",
+            "company": {"id": 11, "name": "Demo Fintech", "short_name": "demo-fintech"},
+            "locations": [{"name": "Bangalore, India"}],
+            "categories": [{"name": "Product Management"}],
+            "levels": [{"name": "Entry Level", "short_name": "entry"}],
+            "refs": {"landing_page": "http://{host}/jobs/9001"},
+        },
+        {
+            "id": 9002,
+            "name": "Principal Security Engineer",
+            "type": "external",
+            "publication_date": "2026-08-19T09:00:00Z",
+            "contents": "<p>12+ years of experience securing distributed systems.</p>",
+            "company": {"id": 12, "name": "Other Corp", "short_name": "other-corp"},
+            "locations": [{"name": "Berlin, Germany"}],
+            "categories": [{"name": "Engineering"}],
+            "levels": [{"name": "Senior Level", "short_name": "senior"}],
+            "refs": {"landing_page": "http://{host}/jobs/9002"},
+        },
+    ],
+}
+
+REMOTIVE_JOBS: dict[str, Any] = {
+    "job-count": 1,
+    "jobs": [
+        {
+            "id": 7001,
+            "url": "http://{host}/jobs/7001",
+            "title": "Associate Product Manager",
+            "company_name": "Remote Demo Co",
+            "category": "Product",
+            "job_type": "full_time",
+            "publication_date": "2026-08-21T00:00:00",
+            "candidate_required_location": "Anywhere",
+            "salary": "",
+            "description": "<p>Remote APM role. 0-2 years of experience.</p>",
+            "tags": ["product"],
+        }
+    ],
+}
+
+ADZUNA_JOBS: dict[str, Any] = {
+    "count": 1,
+    "results": [
+        {
+            "id": "6001",
+            "created": "2026-08-18T10:00:00Z",
+            "title": "Associate Product Manager",
+            "description": "Work on payments. 0-2 years of experience required.",
+            "redirect_url": "http://{host}/jobs/6001",
+            "location": {"display_name": "Hyderabad, Telangana", "area": ["India"]},
+            "company": {"display_name": "Demo Fintech"},
+            "contract_time": "full_time",
+            "category": {"label": "IT Jobs", "tag": "it-jobs"},
+        }
+    ],
+}
+
+ARBEITNOW_JOBS: dict[str, Any] = {
+    "data": [
+        {
+            "slug": "apm-demo",
+            "company_name": "EU Demo GmbH",
+            "title": "Associate Product Manager",
+            "description": "<p>Join our product team. 0-2 years of experience.</p>",
+            "remote": True,
+            "url": "http://{host}/jobs/5001",
+            "tags": ["product"],
+            "job_types": ["full_time"],
+            "location": "Berlin",
+            "created_at": 1787000000,
+        }
+    ],
+    "links": {},
+    "meta": {},
+}
+
+JOBICY_JOBS: dict[str, Any] = {
+    "jobCount": 1,
+    "jobs": [
+        {
+            "id": 3001,
+            "url": "http://{host}/jobs/3001",
+            "jobTitle": "Associate Product Manager",
+            "companyName": "Jobicy Demo",
+            "jobIndustry": ["Product"],
+            "jobType": ["full-time"],
+            "jobGeo": "Anywhere",
+            "jobLevel": "Entry",
+            "jobExcerpt": "Remote APM role, 0-2 years.",
+            "jobDescription": "<p>Remote APM role, 0-2 years of experience.</p>",
+            "pubDate": "2026-08-22 10:00:00",
+        }
+    ],
+}
+
+USAJOBS_RESULTS: dict[str, Any] = {
+    "SearchResult": {
+        "SearchResultItems": [
+            {
+                "MatchedObjectDescriptor": {
+                    "PositionID": "FED-1",
+                    "PositionTitle": "Program Analyst",
+                    "PositionURI": "http://{host}/jobs/fed-1",
+                    "ApplyURI": ["http://{host}/jobs/fed-1/apply"],
+                    "OrganizationName": "Demo Agency",
+                    "PositionLocation": [{"LocationName": "Washington, DC"}],
+                    "PositionSchedule": [{"Name": "Full-Time"}],
+                    "QualificationSummary": "0-2 years of experience.",
+                    "UserArea": {"Details": {"JobSummary": "Analyse programs."}},
+                }
+            }
+        ]
+    }
+}
+
+# --- Posting pages -----------------------------------------------------------
+
+LIVE_POSTING_HTML = """<!doctype html>
+<html><head><title>Associate Product Manager at Demo Fintech</title>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "JobPosting",
+  "title": "Associate Product Manager",
+  "description": "Own a slice of the roadmap.",
+  "datePosted": "2026-08-20T08:00:00Z",
+  "validThrough": "2099-01-01T00:00:00Z",
+  "hiringOrganization": {"@type": "Organization", "name": "Demo Fintech"},
+  "jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress",
+      "addressLocality": "Bengaluru", "addressCountry": "IN"}}
+}
+</script></head>
+<body><h1>Associate Product Manager</h1><p>Demo Fintech is hiring.</p></body></html>
+"""
+
+CLOSED_POSTING_HTML = """<!doctype html>
+<html><head><title>Associate Product Manager at Demo Fintech</title></head>
+<body><h1>Associate Product Manager</h1>
+<p>This job is closed and we are no longer accepting applications.</p>
+</body></html>
+"""
+
+EXPIRED_POSTING_HTML = """<!doctype html>
+<html><head><title>Associate Product Manager</title>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"JobPosting","title":"Associate Product Manager",
+ "validThrough":"2020-01-01T00:00:00Z",
+ "hiringOrganization":{"@type":"Organization","name":"Demo Fintech"}}
+</script></head>
+<body><h1>Associate Product Manager</h1></body></html>
+"""
+
+WRONG_COMPANY_HTML = """<!doctype html>
+<html><head><title>Associate Product Manager</title>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"JobPosting","title":"Associate Product Manager",
+ "hiringOrganization":{"@type":"Organization","name":"Completely Different Holdings"}}
+</script></head>
+<body><h1>Associate Product Manager</h1></body></html>
+"""
+
+
 ROBOTS_ALLOW = "User-agent: *\nAllow: /\n"
 ROBOTS_DISALLOW_PRIVATE = "User-agent: *\nDisallow: /private\n"
 
@@ -122,6 +298,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _json(self, payload: Any, *, status: int = 200) -> None:
+        self._send(json.dumps(payload), status=status, content_type="application/json")
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         path = self.path.split("?", 1)[0]
 
@@ -139,6 +318,28 @@ class _Handler(BaseHTTPRequestHandler):
                 json.dumps(LEVER_JOBS).replace("{host}", self.headers.get("Host", "localhost")),
                 content_type="application/json",
             )
+        elif path == "/api/public/jobs":
+            self._json(THE_MUSE_JOBS)
+        elif path == "/api/remote-jobs":
+            self._json(REMOTIVE_JOBS)
+        elif path.startswith("/v1/api/jobs/"):
+            self._json(ADZUNA_JOBS)
+        elif path == "/api/job-board-api":
+            self._json(ARBEITNOW_JOBS)
+        elif path == "/api/v2/remote-jobs":
+            self._json(JOBICY_JOBS)
+        elif path == "/api/search":
+            self._json(USAJOBS_RESULTS)
+        elif path == "/posting/live":
+            self._send(LIVE_POSTING_HTML)
+        elif path == "/posting/closed":
+            self._send(CLOSED_POSTING_HTML)
+        elif path == "/posting/expired":
+            self._send(EXPIRED_POSTING_HTML)
+        elif path == "/posting/wrong-company":
+            self._send(WRONG_COMPANY_HTML)
+        elif path == "/posting/gone":
+            self._send("<html>no such job</html>", status=404)
         elif path == "/careers":
             self._send(CAREER_PAGE_HTML)
         elif path == "/team":

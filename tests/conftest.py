@@ -1,8 +1,8 @@
 """Shared test fixtures.
 
-The suite is fully offline: no test touches a real website. External sites are
-stood in for by the local mock server in ``tests/fixtures/mock_server.py``, and
-the AI and verification providers have in-process fakes.
+The suite is fully offline: no test touches a real website. External sources
+are stood in for by the local mock server in ``tests/fixtures/mock_server.py``,
+and the AI and verification providers have in-process fakes.
 """
 
 from __future__ import annotations
@@ -35,16 +35,30 @@ from sqlalchemy.orm import Session  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_engine, get_session_factory, reset_engine  # noqa: E402
 from app.models import (  # noqa: E402,F401  (registers metadata)
+    Application,
     Company,
+    Contact,
     Job,
-    Recruiter,
+    JobSearch,
     User,
+    UserProfile,
 )
-from app.models.enums import CompanyPriority, EmailConfidence, SourceType  # noqa: E402
+from app.models.enums import ContactRole, EmailStatus, SourceType, ValidationStatus  # noqa: E402
 from app.security.rate_limit import get_domain_rate_limiter  # noqa: E402
-from app.services.scoring.context import seed_default_taxonomy  # noqa: E402
-from app.services.scoring.weights import ensure_scoring_config  # noqa: E402
 from tests.fixtures.mock_server import MockSite  # noqa: E402
+
+TABLES = (
+    "application_events",
+    "applications",
+    "job_contacts",
+    "contacts",
+    "jobs",
+    "search_runs",
+    "job_searches",
+    "companies",
+    "user_profile",
+    "users",
+)
 
 
 def _database_available() -> bool:
@@ -88,15 +102,9 @@ def session() -> Iterator[Session]:
     """A clean database for each test."""
     if not DB_AVAILABLE:
         pytest.skip("PostgreSQL not available")
-    engine = get_engine()
-    with engine.begin() as connection:
+    with get_engine().begin() as connection:
         connection.execute(
-            text(
-                "TRUNCATE users, companies, jobs, recruiters, contacts, "
-                "job_recruiter_relationships, hiring_signals, outreach_leads, "
-                "outreach_events, email_verifications, user_profile, crawl_runs, "
-                "source_records, scoring_configs, taxonomy_terms RESTART IDENTITY CASCADE"
-            )
+            text(f"TRUNCATE {', '.join(TABLES)} RESTART IDENTITY CASCADE")
         )
     db = get_session_factory()()
     try:
@@ -109,8 +117,6 @@ def session() -> Iterator[Session]:
 
 @pytest.fixture
 def user(session: Session) -> User:
-    from app.models.user import UserProfile
-
     record = User(email="tester@example.com", display_name="Tester")
     session.add(record)
     session.flush()
@@ -118,32 +124,24 @@ def user(session: Session) -> User:
         UserProfile(
             user_id=record.id,
             full_name="Test Candidate",
-            headline="product analyst with 2 years in analytics",
+            headline="Product analyst with 2 years in analytics",
             years_experience=2.0,
-            experience="Owned the retention dashboard; ran experiments on the checkout funnel.",
-            skills=["SQL", "Product Analytics", "A/B Testing"],
-            target_roles=["Product Analyst", "Associate Product Manager"],
-            target_industries=["Fintech", "SaaS"],
-            preferred_locations=["Remote", "Bangalore"],
+            default_titles=["Associate Product Manager"],
+            default_locations=["Bangalore"],
+            skills=["SQL", "Product Analytics"],
         )
     )
-    ensure_scoring_config(session, record.id)
-    seed_default_taxonomy(session, record.id)
     session.flush()
     return record
 
 
 @pytest.fixture
-def company(session: Session, user: User) -> Company:
+def company(session: Session) -> Company:
     record = Company(
-        user_id=user.id,
-        company_name="Testly Payments",
-        normalized_name="testly",
-        company_domain="testly.example",
-        career_page_url="https://testly.example/careers",
-        industry="Fintech",
-        priority=CompanyPriority.HIGH,
-        active=True,
+        name="Demo Fintech",
+        normalized_name="demo fintech",
+        domain="demo-fintech.example",
+        careers_url="https://demo-fintech.example/careers",
     )
     session.add(record)
     session.flush()
@@ -151,20 +149,44 @@ def company(session: Session, user: User) -> Company:
 
 
 @pytest.fixture
-def recruiter(session: Session, company: Company) -> Recruiter:
-    record = Recruiter(
+def job(session: Session, user: User, company: Company) -> Job:
+    record = Job(
+        user_id=user.id,
+        company_id=company.id,
+        title="Associate Product Manager",
+        normalized_title="associate product manager",
+        company_name=company.name,
+        location="Bangalore, India",
+        job_url="https://demo-fintech.example/jobs/1",
+        canonical_url="https://demo-fintech.example/jobs/1",
+        source=SourceType.GREENHOUSE,
+        fingerprint="fingerprint-1",
+        validation_status=ValidationStatus.VALID,
+        validation_reason="Page still publishes a live JobPosting record.",
+        relevance_score=92.0,
+        min_years=0.0,
+        max_years=2.0,
+        experience_text="0-2 years",
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+@pytest.fixture
+def contact(session: Session, company: Company) -> Contact:
+    record = Contact(
         company_id=company.id,
         name="Casey Talent",
-        normalized_name="casey talent",
-        company_name=company.company_name,
+        dedupe_key="email:casey.talent@demo-fintech.example",
         title="Talent Acquisition Partner, Product",
-        public_professional_email="casey.talent@testly.example",
-        email_source_url="https://testly.example/careers",
-        email_source_type=SourceType.COMPANY_TEAM_PAGE,
-        email_confidence=EmailConfidence.HIGH,
-        email_confidence_score=100.0,
-        role_relevance=90.0,
-        relevance_score=88.0,
+        company_name=company.name,
+        role=ContactRole.TALENT_ACQUISITION,
+        email="casey.talent@demo-fintech.example",
+        email_status=EmailStatus.PUBLISHED_ATTRIBUTED,
+        source=SourceType.COMPANY_TEAM_PAGE,
+        source_url="https://demo-fintech.example/careers",
+        confidence=0.9,
     )
     session.add(record)
     session.flush()
@@ -173,7 +195,7 @@ def recruiter(session: Session, company: Company) -> Recruiter:
 
 @pytest.fixture(scope="session")
 def mock_site() -> Iterator[MockSite]:
-    """A local stand-in for a real career site / ATS API."""
+    """A local stand-in for a real job source / career site."""
     site = MockSite().start()
     try:
         yield site
@@ -190,5 +212,9 @@ def api_client():
 
     from app.main import create_app
 
+    with get_engine().begin() as connection:
+        connection.execute(
+            text(f"TRUNCATE {', '.join(TABLES)} RESTART IDENTITY CASCADE")
+        )
     with TestClient(create_app()) as client:
         yield client

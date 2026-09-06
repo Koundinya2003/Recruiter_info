@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Iterator
 
 from fastapi import Depends, Header, HTTPException, status
@@ -11,8 +12,6 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.session import get_db
 from app.models.user import User, UserProfile
-from app.services.scoring.context import seed_default_taxonomy
-from app.services.scoring.weights import ensure_scoring_config
 
 
 def db_session() -> Iterator[Session]:
@@ -28,12 +27,8 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     """
     if not settings.auth_enabled:
         return
-    expected = settings.api_key
-    provided = x_api_key or ""
     # Constant-time comparison; length differences alone must not leak.
-    import hmac
-
-    if not hmac.compare_digest(provided, expected):
+    if not hmac.compare_digest(x_api_key or "", settings.api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",
@@ -52,8 +47,9 @@ def get_or_create_user(session: Session) -> User:
         session.add(user)
         session.flush()
         session.add(UserProfile(user_id=user.id))
-        ensure_scoring_config(session, user.id)
-        seed_default_taxonomy(session, user.id)
+        session.flush()
+    if user.profile is None:
+        session.add(UserProfile(user_id=user.id))
         session.flush()
     return user
 

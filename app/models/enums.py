@@ -129,7 +129,7 @@ class ValidationCheck(StrEnum):
 
 
 class CheckOutcome(StrEnum):
-    PASS = "PASS"
+    PASS = "PASS"  # noqa: S105 - a check result, not a credential
     FAIL = "FAIL"
     UNKNOWN = "UNKNOWN"
 

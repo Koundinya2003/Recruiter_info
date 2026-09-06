@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.api.routes import admin, companies, dashboard, jobs, outreach, recruiters, settings_routes
+from app.api.routes import applications, contacts, dashboard, jobs, search, system
 from app.config import settings
 from app.logging_config import configure_logging, get_logger
 from app.security.rate_limit import FixedWindowRateLimiter
@@ -27,40 +27,38 @@ from app.security.rate_limit import FixedWindowRateLimiter
 log = get_logger(__name__)
 
 DESCRIPTION = """
-Research and outreach intelligence for job seekers.
+A job search, recruiter outreach and application tracking workspace.
 
-Answers one question well: **who should I contact today about a role that is
-actively hiring?**
+Describe the roles you want in plain English. The workspace searches public job
+APIs and companies' own job boards for **real, currently open postings**,
+checks each one before showing it, finds publicly published people at those
+companies who could be contacted about the role, and tracks every application
+you make.
 
-This is not a mass-emailing tool. It discovers jobs from official public APIs
-and companies' own career pages, finds *publicly published* talent contacts,
-scores relevance transparently, and requires explicit human approval before any
-outreach is recorded. It never sends email itself.
+Three things it will not do, by design:
+
+* invent a job, a company, a person, an email address or a URL;
+* guess an email address from a name and a domain;
+* apply or send a message on your behalf — you stay in control of both.
 """
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
     configure_logging()
+    from app.providers.registry import provider_statuses
+
+    statuses = provider_statuses()
     log.info(
         "app.startup",
         env=settings.app_env,
         ai_configured=settings.ai_configured,
-        verification_provider=settings.email_verification_provider,
         auth_enabled=settings.auth_enabled,
+        sources_usable=[s.name for s in statuses if s.usable],
+        sources_unusable={s.name: s.missing_settings for s in statuses if not s.usable},
     )
-    scheduler = None
-    if settings.scheduler_enabled:
-        from app.workers.scheduler import start_scheduler
-
-        scheduler = start_scheduler()
-    app.state.scheduler = scheduler
-    try:
-        yield
-    finally:
-        if scheduler is not None:
-            scheduler.shutdown(wait=False)
-        log.info("app.shutdown")
+    yield
+    log.info("app.shutdown")
 
 
 def create_app() -> FastAPI:
@@ -170,13 +168,12 @@ def create_app() -> FastAPI:
         )
 
     api_routers = [
-        companies.router,
+        search.router,
         jobs.router,
-        recruiters.router,
-        outreach.router,
+        contacts.router,
+        applications.router,
         dashboard.router,
-        settings_routes.router,
-        admin.router,
+        system.router,
     ]
     for router in api_routers:
         app.include_router(router, prefix="/api")
@@ -186,7 +183,7 @@ def create_app() -> FastAPI:
         return {
             "app": settings.app_name,
             "docs": "/docs",
-            "health": "/api/admin/health",
+            "health": "/api/health",
         }
 
     return app

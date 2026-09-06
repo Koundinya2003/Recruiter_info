@@ -1,52 +1,87 @@
-"""Job schemas."""
+"""Job and contact response shapes."""
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import JobStatus, SourceType
-from app.schemas.common import ORMModel, ScoreBreakdownOut
+from app.schemas.common import ORMModel
+
+
+class ValidationOut(BaseModel):
+    status: str
+    label: str
+    reason: str | None = None
+    confirmed: bool = False
+    checks: dict[str, str] = Field(default_factory=dict)
+    checked_at: datetime | None = None
+    http_status: int | None = None
+
+
+class ContactOut(ORMModel):
+    id: int
+    name: str | None
+    display_name: str
+    title: str | None
+    company_name: str
+    role: str
+    role_label: str
+    is_person: bool
+    profile_url: str | None
+    search_url: str | None
+    email: str | None
+    email_status: str
+    email_status_label: str
+    email_verification: str
+    source: str
+    source_label: str
+    source_url: str | None
+    source_excerpt: str | None
+    confidence: float
+    rationale: str | None = None
+    rank: int | None = None
 
 
 class JobOut(ORMModel):
     id: int
-    company_id: int
     title: str
+    company_name: str
     location: str | None
+    is_remote: bool
+    experience_label: str
+    min_years: float | None
+    max_years: float | None
     employment_type: str | None
+    department: str | None
+    salary_text: str | None
+    summary: str | None
     job_url: str
-    source: SourceType
-    status: JobStatus
+    apply_url: str | None
+    final_url: str | None
+    source: str
+    source_label: str
     posted_at: datetime | None
     discovered_at: datetime
-    last_seen_at: datetime
+    age_days: float | None
+    validation: ValidationOut
     relevance_score: float
-    is_demo: bool
+    match_reasons: list[str]
+    is_saved: bool
+    is_dismissed: bool
+    contacts: list[ContactOut] = Field(default_factory=list)
+    application_id: int | None = None
+    application_status: str | None = None
 
 
 class JobDetail(JobOut):
-    description: str | None
-    normalized_title: str
-    canonical_url: str
-    content_hash: str
-    source_job_id: str | None
-    company_name: str | None = None
-    relevance: ScoreBreakdownOut = Field(default_factory=ScoreBreakdownOut)
-    age_hours: float | None = None
-    linked_recruiters: list[dict] = Field(default_factory=list)
+    description: str | None = None
+    relevance_breakdown: dict[str, Any] = Field(default_factory=dict)
+    search_id: int | None = None
+    company_id: int
 
 
-class JobFilters(BaseModel):
-    q: str | None = None
-    company_id: int | None = None
-    status: JobStatus | None = None
-    source: SourceType | None = None
-    min_relevance: float | None = Field(default=None, ge=0, le=100)
-    max_age_hours: float | None = Field(default=None, ge=0)
-    location: str | None = None
-    include_demo: bool = True
-    limit: int = Field(default=50, ge=1, le=200)
-    offset: int = Field(default=0, ge=0)
-    sort: str = Field(default="relevance", pattern="^(relevance|posted|discovered|title)$")
+class JobActionRequest(BaseModel):
+    dismissed: bool | None = None
+    saved: bool | None = None

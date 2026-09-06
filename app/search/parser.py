@@ -373,7 +373,8 @@ def refine_with_llm(query: JobQuery, *, raw: str) -> JobQuery:
     from app.services.ai.provider import ChatMessage, LLMError, get_provider
 
     provider = get_provider()
-    if not provider.available:
+    if provider is None:
+        # No model configured. The rules already did the work; say nothing.
         return query
 
     try:

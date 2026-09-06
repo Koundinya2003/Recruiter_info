@@ -245,7 +245,7 @@ def _build_alias_index() -> dict[str, set[str]]:
     for alias, (display, _code) in CITIES.items():
         index.setdefault(display, set()).add(alias)
         index[display].add(basic_normalize(display))
-    for alias, code in COUNTRY_CODES.items():
+    for alias in COUNTRY_CODES:
         display = alias.title()
         index.setdefault(display, set()).add(alias)
     return index
