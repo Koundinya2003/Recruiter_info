@@ -229,8 +229,12 @@ class CompanyBoardProvider(JobProvider):
                     break
         return boards
 
+    #: Consecutive failures that mean the boards are unreachable, not missing.
+    FAILURE_STREAK_LIMIT = 3
+
     def search(self, query: JobQuery) -> list[RawJob]:
         out: list[RawJob] = []
+        streak = 0
         for board in self._target_boards(query):
             if self.client.budget_exhausted:
                 self.result.notes.append("Stopped early: request budget for this search is spent.")
@@ -238,18 +242,33 @@ class CompanyBoardProvider(JobProvider):
             try:
                 payload = self.fetch_json(board.api_url)
             except FetchBlocked as exc:
+                streak += 1
                 self.result.errors.append(f"{board.company} board declined the request: {exc}")
-                continue
             except Exception as exc:  # noqa: BLE001
+                streak += 1
                 self.result.errors.append(
                     f"{board.company} board could not be read: {type(exc).__name__}"
                 )
+            else:
+                streak = 0
+                for item in _extract_board_jobs(board.platform, payload):
+                    job = _board_job_to_raw(board, item, board.api_url)
+                    if job is not None:
+                        out.append(job)
                 continue
-            jobs = _extract_board_jobs(board.platform, payload)
-            for item in jobs:
-                job = _board_job_to_raw(board, item, board.api_url)
-                if job is not None:
-                    out.append(job)
+
+            if streak >= self.FAILURE_STREAK_LIMIT:
+                # Several boards in a row failing is a connectivity problem, not
+                # a run of missing boards. Stop rather than burn the budget
+                # collecting the same error over and over.
+                self.result.errors = self.result.errors[: self.FAILURE_STREAK_LIMIT]
+                self.result.notes.append(
+                    "Stopped querying company boards after "
+                    f"{self.FAILURE_STREAK_LIMIT} consecutive failures — these are public "
+                    "APIs, so this usually means the machine running the API cannot reach "
+                    "them."
+                )
+                break
         return out
 
 

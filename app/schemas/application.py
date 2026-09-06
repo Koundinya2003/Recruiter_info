@@ -54,6 +54,7 @@ class ApplicationOut(ORMModel):
     location: str | None
     job_url: str
     source: str | None
+    source_label: str | None
     contact_name: str | None
     contact_title: str | None
     contact_email: str | None

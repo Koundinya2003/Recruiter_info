@@ -22,6 +22,7 @@ cannot be produced here.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
@@ -434,10 +435,13 @@ def discover_contacts(
         result.notes.append(
             f"No confirmed website for {company_name}, so there were no pages to check."
         )
-    checked = 0
+    attempted = 0
     for url in pages:
-        if checked >= budget or client.budget_exhausted:
+        # The budget counts attempts, not successes: a site that refuses every
+        # request must not cost more than one that answers them.
+        if attempted >= budget or client.budget_exhausted:
             break
+        attempted += 1
         try:
             response = client.fetch(url)
         except FetchBlocked as exc:
@@ -446,7 +450,6 @@ def discover_contacts(
         except Exception as exc:  # noqa: BLE001
             result.errors.append(f"{url}: {type(exc).__name__}")
             continue
-        checked += 1
         if not response.ok:
             continue
         result.pages_checked.append(response.final_url)
@@ -535,6 +538,16 @@ def domain_from_url(url: str | None) -> str | None:
     if not host:
         return None
     host = host.removeprefix("www.")
+    # A bare IP address is never an employer's domain, and treating one as a
+    # company website would send the crawler somewhere meaningless.
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        return None
+    if "." not in host:
+        return None
     # An ATS or aggregator host is not the employer's own domain.
     third_party = (
         "greenhouse.io", "lever.co", "ashbyhq.com", "workable.com", "myworkdayjobs.com",

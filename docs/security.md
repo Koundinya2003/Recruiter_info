@@ -2,9 +2,10 @@
 
 ## Threat model
 
-A single-user local application that (a) fetches URLs the user supplies, (b)
-stores third parties' professional contact details, and (c) can be pointed at an
-LLM API with a paid key. The risks that follow from that shape:
+A single-user local application that (a) fetches URLs it discovers from search
+results, (b) stores third parties' publicly published professional contact
+details, and (c) can be pointed at an LLM API with a paid key. The risks that
+follow from that shape:
 
 | Threat | Control |
 | --- | --- |
@@ -14,7 +15,7 @@ LLM API with a paid key. The risks that follow from that shape:
 | Unauthorised API access | Optional API key with constant-time comparison |
 | Runaway clients / accidental self-DoS | Per-client API rate limiting, per-domain crawl limiting |
 | Harming a third-party site | robots.txt, politeness delays, budgets, terminal handling of blocks |
-| Harming a third party personally | Provenance on every contact, no personal mailboxes, `DO_NOT_CONTACT`, approval gate |
+| Harming a third party personally | Provenance on every contact, no personal mailboxes, no address inference, no sending |
 | Resource exhaustion from a hostile response | Response size cap enforced while streaming, request timeouts, redirect cap |
 
 ## SSRF protection
@@ -49,13 +50,16 @@ redirect into internal space.
 collectors at a local mock server. It defaults to `false` and must stay that way
 in any real deployment. Tests assert both behaviours.
 
-### Validation happens at the boundary too
+### Every fetched URL goes through it
 
-Pydantic validators reject unsafe URLs before they reach a service: company
-`career_page_url`, profile `portfolio_url` / `github_url` / `linkedin_url`,
-recruiter `professional_profile_url` / `email_source_url`, and scan
-`extra_recruiter_urls`. The API returns `422` with a specific message rather
-than attempting the fetch.
+Job posting URLs come from third-party APIs, not from the user, but they are
+still URLs this application will fetch — so they get the same treatment. Contact
+discovery derives candidate pages from a company domain that was itself
+confirmed by following a posting URL, and `domain_from_url` refuses a bare IP
+address or a job board's own host, so the crawler is never pointed somewhere
+meaningless. Any URL arriving in a request body is validated by a Pydantic
+validator before a service sees it; the API returns `422` with a specific
+message rather than attempting the fetch.
 
 ## SQL injection
 
@@ -65,8 +69,8 @@ no string concatenation into SQL anywhere in the codebase, including the
 
 `tests/security/test_api_security.py` fires eight classic payloads at every
 search and filter endpoint and then asserts the tables still exist and the rows
-are intact. A payload stored as a company name is asserted to come back byte for
-byte — proof it was treated as data.
+are intact. A payload stored in an application's notes is asserted to come back
+byte for byte — proof it was treated as data.
 
 ## Secrets
 
@@ -75,8 +79,9 @@ byte — proof it was treated as data.
   test asserts every key line in it is empty.
 * `alembic.ini` deliberately has no `sqlalchemy.url`; migrations read
   `DATABASE_URL` from settings.
-* `/api/admin/health` reports *whether* an integration is configured, never the
-  value. A test asserts secrets never appear in its response.
+* `/api/health` and `/api/search/sources` report *whether* a source is
+  configured and *which settings are missing* — never a value that is set. Tests
+  assert no configured secret appears in either response.
 * Provider errors are constructed by hand rather than echoing the response body,
   because a 401 body can contain the key. A test asserts the key never appears
   in the raised error.
@@ -90,7 +95,7 @@ Setting `API_KEY` requires `X-API-Key` on every `/api` request, compared with
 `hmac.compare_digest`. Leaving it empty runs the app as an unauthenticated local
 tool, which is the intended default for a single-user install on localhost.
 
-`/api/admin/health` stays reachable without a key so process monitoring works.
+`/api/health` stays reachable without a key so process monitoring works.
 
 ## Rate limiting
 
@@ -101,8 +106,8 @@ Two independent limiters:
   with `Retry-After`.
 * **`DomainRateLimiter`** enforces politeness towards sites we crawl by
   *waiting* between requests to the same domain. It honours a site's
-  `Crawl-delay` when that is longer than ours. Every wait is recorded and shown
-  on the Admin page.
+  `Crawl-delay` when that is longer than ours. Every wait is recorded on the
+  client's fetch statistics.
 
 Waiting is the entire mechanism. There is no proxy rotation, no address
 cycling, no User-Agent shuffling — none of the things that exist to make a
@@ -111,8 +116,9 @@ blocked client look like a different client.
 ## Input and output validation
 
 * Pydantic models validate every request body and query parameter: bounded
-  lengths, enum membership, numeric ranges, `EmailStr` for addresses, regex on
-  sort keys.
+  lengths, enum membership, numeric ranges, and address syntax. A free-text
+  search request is capped at 500 characters and is parsed, never concatenated
+  into a query.
 * Responses are Pydantic models too, so internal fields cannot leak by
   accident.
 * Validation failures return `422` with a field-level list, without echoing the
@@ -125,18 +131,23 @@ blocked client look like a different client.
 
 Security here includes not harming the people in the database:
 
-* **Provenance is mandatory.** Adding a contact with an address requires a
-  source URL. Every `contacts` row stores where the detail came from.
-* **Personal mailboxes are never collected**, even when published.
-* **Inferred addresses can never be marked verified**, and are visually distinct
-  everywhere.
-* **`DO_NOT_CONTACT` is absolute** — enforced in the SQL of the recommendation
-  engine, blocking lead creation, draft generation, approval and recording.
-* **Approval is required.** `CONTACTED` is reachable only from `APPROVED` with
-  an approved draft; editing a draft revokes approval.
-* **The application never sends email.** There is no SMTP client, no send
-  endpoint, no scheduled send. It cannot become a bulk mailer by
-  misconfiguration.
+* **Provenance is mandatory.** Every discovered contact stores the URL it was
+  read from. Discovery cannot produce a record without one.
+* **Addresses are never inferred.** `EmailStatus` has no value for a guessed
+  address, so the rule is structural rather than a check someone can forget.
+  Turning a name and a domain into an address is not a feature that is disabled
+  — it does not exist.
+* **Personal mailboxes are never collected**, even when published, and an
+  address on a domain that is not the company's is rejected.
+* **An inbox is never given a person's name.** `Contact.name` is NULL for a team
+  address and for a directory search link, and the UI reads `is_person` rather
+  than assuming.
+* **The application never sends anything.** There is no SMTP client, no send
+  endpoint, no scheduled send, and no message composer. It puts an address on
+  your clipboard and opens the employer's own page. It cannot become a bulk
+  mailer by misconfiguration.
+* **No posting is shown unchecked**, and a check that could not be completed is
+  labelled as such rather than reported as a pass.
 
 ## Dependency and operational notes
 
@@ -154,5 +165,5 @@ Security here includes not harming the people in the database:
 pytest tests/security -v
 ```
 
-86 tests covering SSRF payloads, malformed URLs, SQL injection, input
+92 tests covering SSRF payloads, malformed URLs, SQL injection, input
 validation, auth enforcement and secret leakage.

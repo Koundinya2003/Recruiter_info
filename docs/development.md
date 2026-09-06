@@ -12,146 +12,120 @@ createdb -O roi roi_test
 
 cp .env.example .env          # set DATABASE_URL
 alembic upgrade head
-python scripts/seed_demo.py   # optional, gives you something to look at
 ```
 
 Two processes:
 
 ```bash
-uvicorn app.main:app --reload            # API   :8000
+uvicorn app.main:app --reload            # API   :8000  (docs at /docs)
 streamlit run frontend/Dashboard.py      # UI    :8501
 ```
+
+There is no demo seeder, deliberately. Seeding would mean writing fabricated
+jobs, companies and recruiters into the database — exactly what this product
+exists not to do. Run a real search instead; several sources need no
+credentials.
 
 ## Quality gates
 
 Run all four before committing:
 
 ```bash
-ruff check app/ tests/ scripts/ frontend/   # lint (includes bandit rules)
-mypy app/                                    # type check
-pytest                                       # 257 tests
-alembic check                                # models and migrations agree
+ruff check .            # lint, including the bandit (S) ruleset
+mypy app                # type check
+pytest                  # 236 tests
+alembic upgrade head    # then compare against ORM metadata (see below)
+```
+
+Checking the migration still matches the models:
+
+```bash
+python -c "
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from app.db.session import get_engine
+from app.models import Base
+import app.models
+with get_engine().connect() as c:
+    print(compare_metadata(MigrationContext.configure(c), Base.metadata) or 'in sync')"
 ```
 
 ## Test layout
 
 ```
 tests/
-├── conftest.py            DB fixtures, mock site, TestClient
-├── fixtures/mock_server.py  a local stand-in for a real career site
-├── unit/                  normalisation, dedupe, scoring, state machine,
-│                          verification providers, AI guardrails
-├── integration/           collectors, ingest flow, demo safety, API workflow
-└── security/              SSRF, injection, auth, input validation, secrets
+├── conftest.py                  DB fixtures, mock site, TestClient
+├── fixtures/mock_server.py      stands in for every job source and career site
+├── unit/
+│   ├── test_query_parsing.py    experience, gazetteer, the NL parser
+│   ├── test_relevance.py        scoring and the hard gates
+│   └── test_dedupe.py           canonical URLs and fingerprints
+├── integration/
+│   ├── test_providers.py        every provider's payload mapping
+│   ├── test_validation.py       valid / expired / broken / mismatch / unconfirmed
+│   ├── test_contacts.py         discovery, provenance, ranking, budgets
+│   ├── test_pipeline.py         the funnel end to end
+│   ├── test_tracker.py          statuses, dates, follow-ups, counts
+│   └── test_api_flow.py         the whole workflow through the API
+└── security/                    SSRF, injection, auth, secret leakage
 ```
 
-Useful invocations:
+**The suite never touches a real website.** `tests/fixtures/mock_server.py` runs
+a local HTTP server serving the documented response shape of every source, plus
+the posting states that matter: live, closed, expired, wrong company, 404,
+robots-disallowed and 403. Provider tests point a provider's `BASE` at it with
+`monkeypatch`.
+
+Tests needing the database are marked `requires_db` and skip cleanly when
+PostgreSQL is not reachable, so `pytest tests/unit` always runs.
+
+## Adding a job source
+
+See [sources.md](sources.md) — the contract, the three rules for `search()`, and
+how to test the mapping.
+
+## Adding a place or a role word
+
+`app/search/gazetteer.py`. Add a city to `CITIES` as
+`"alias": ("Display Name", "country_code")` — several aliases may map to one
+display name, which is how "Bengaluru" and "Bangalore" dedupe to one location.
+Role abbreviations go in `ROLE_ABBREVIATIONS`, close variants worth also
+searching in `TITLE_EXPANSIONS`.
+
+An unrecognised word is left in the role title rather than guessed at. That is
+the safe failure mode: it narrows the search instead of silently changing it.
+
+## Changing how strict the search is
+
+| Setting | Effect |
+|---|---|
+| `SEARCH_MIN_RELEVANCE` | Raise it for fewer, closer matches; lower it to see more near-misses |
+| `VALIDATION_MAX_JOBS` | Postings put through a live check per search. Each costs a request and a politeness delay |
+| `CONTACTS_MAX_COMPANIES` | Companies crawled for contacts per search |
+| `CRAWLER_DOMAIN_DELAY_SECONDS` | Seconds between requests to one domain. Do not set this to 0 outside tests |
+
+The hard gates in `app/search/relevance.py` are not tuned by settings. A
+constraint the user stated outright is not a weight to trade off, and
+`GATE_SCORE` sits below every sane threshold on purpose.
+
+## Migrations
 
 ```bash
-pytest tests/unit -q                      # fast
-pytest tests/security -v                  # the ones that must never regress
-pytest -k "dedup or duplicate"            # by name
-pytest --lf                               # last failed
-TEST_DATABASE_URL=postgresql+psycopg2://user:pass@host/db pytest
-```
-
-### The offline rule
-
-**No test may contact a real website.** `tests/fixtures/mock_server.py` serves
-canned Greenhouse and Lever JSON, a JSON-LD career page, a team page with mixed
-contact types, plus `robots.txt`, a 403 endpoint, a 500 endpoint and a redirect.
-
-It is a `ThreadingHTTPServer` on purpose: collectors hold keep-alive connections
-open (one for `robots.txt`, one for the page), which deadlocks a
-single-connection server.
-
-Tests that need the mock site construct the client explicitly:
-
-```python
-SafeHTTPClient(allow_private=True, max_pages=40, max_retries=0)
-```
-
-`allow_private` is opt-in per client so the global setting stays `False` and the
-SSRF tests keep exercising the real production policy.
-
-If PostgreSQL is unavailable, database-backed tests skip rather than fail, via
-the `requires_db` marker in `conftest.py`.
-
-## Adding a feature
-
-### A new collector
-
-1. Subclass `BaseCollector`, or `JobCollectorMixin` for job sources (it already
-   implements normalise/validate/dedupe for postings).
-2. Implement `collect()` using `self.client.fetch(url)`. Never call `httpx`
-   directly — that is what keeps SSRF, robots and rate limiting universal.
-3. Register it in `collectors/registry.py`.
-4. Add it to `is_authoritative_source()` only if the source lists *all* current
-   openings.
-5. Add fixtures to the mock server and a test in
-   `tests/integration/test_collectors.py`.
-
-### A new scoring component
-
-1. Add the weight to the relevant `DEFAULT_*_WEIGHTS` in
-   `services/scoring/weights.py`.
-2. Add a `result.add(key, label, points, max_points, reasons)` call in the
-   scorer. **Always pass reasons** — a component with no reasons is a bug.
-3. Expose it on the Settings page if it should be user-tunable.
-4. Add a test asserting both the number and the explanation.
-
-### A new API endpoint
-
-1. Schemas in `app/schemas/`, with validators for anything user-supplied.
-2. Route in `app/api/routes/`, depending on `db_session` and `current_user`.
-3. Business logic in `app/services/` — routes stay thin, and rules that must not
-   be bypassable belong in a service.
-4. Client method in `frontend/api_client.py`.
-5. Tests in `tests/integration/test_api_flow.py`.
-
-### A migration
-
-```bash
-alembic revision --autogenerate -m "add x to y"
-# read the generated file; autogenerate is a first draft, not an oracle
+alembic revision --autogenerate -m "add whatever"
 alembic upgrade head
-alembic check
 ```
+
+Read the generated file before committing it — autogenerate misses server
+defaults and index flags, and `native_enum=False` columns are plain `VARCHAR`,
+so adding an enum value needs no migration at all.
 
 ## Conventions
 
-* Timezone-aware UTC everywhere via `app.db.base.utcnow()`. Never
-  `datetime.utcnow()`.
-* Enums are `StrEnum` in `app/models/enums.py`, persisted as VARCHAR + CHECK.
-* Structured logging: `log.info("event.name", key=value)`, never f-strings into
-  log messages.
-* Collectors never raise out of `run()`; failures become data on the outcome.
-* Comments explain *why*. The code already says what.
-
-## Debugging
-
-**Scan found nothing.** Open the Admin page — the crawl run's `notes` say why
-(client-side rendering, robots disallow, no career page URL). `BLOCKED` means
-the site declined us, which is a correct outcome, not a bug to route around.
-
-**Scores look wrong.** Open any job's "Why?" panel: it shows each component,
-its points, and the reason. If the taxonomy is the problem, edit it on the
-Settings page and click *Re-score all jobs*.
-
-**A lead will not move.** The state machine refuses illegal transitions with an
-explanatory message. `CONTACTED` is deliberately unreachable by hand — use
-*record outreach* so it is logged.
-
-**Verification says `invalid` for demo data.** Correct: demo addresses use the
-reserved `.example` TLD, which cannot resolve. The verifier is being honest.
-
-## Project layout notes
-
-* `app/main.py` is the composition root — middleware, error handlers, routers.
-* `frontend/` holds no business logic; it renders API responses.
-* `frontend/components/ui.py` owns the visual vocabulary. In particular,
-  `email_badge()` is the single function deciding how an address is presented,
-  which is what guarantees a verified public address and an inferred guess can
-  never look the same.
-* `scripts/seed_demo.py` is the only script that writes data; it refuses any
-  address outside `.example`.
+- The API is the whole product surface. The frontend holds no business logic and
+  no database access.
+- A field the source did not give stays `None`. Never fill a gap with a
+  plausible value — "Not stated" is a real answer and the UI shows it.
+- Every discovered record carries where it came from. If you cannot cite it, do
+  not store it.
+- A check that could not be completed is its own outcome, distinct from a pass
+  and from a failure.

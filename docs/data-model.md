@@ -1,187 +1,129 @@
 # Data model
 
-PostgreSQL, SQLAlchemy 2.0 declarative models, Alembic migrations. Sixteen
-tables — enough to model the domain honestly, and no more.
-
-Enums are stored as `VARCHAR` with a `CHECK` constraint (`native_enum=False`),
-so adding a value is an ordinary migration rather than a PostgreSQL type
-rewrite.
-
-## Overview
+Nine tables. Every one exists to serve a step of
+*search → validate → contact → apply → track*.
 
 ```
-users ──┬── user_profile           (1:1)  résumé context for scoring + drafting
-        ├── scoring_configs        (1:N)  editable weights
-        ├── taxonomy_terms         (1:N)  editable role/industry/skill taxonomy
-        ├── companies              (1:N)
-        └── outreach_leads         (1:N)
-
-companies ──┬── jobs               (1:N)
-            ├── recruiters         (1:N)
-            ├── hiring_signals     (1:N)
-            └── crawl_runs         (1:N)
-
-jobs ──┬── job_recruiter_relationships ──┬── recruiters
-       └── hiring_signals  (nullable)    │
-                                         ├── contacts         (1:N)
-                                         └── email_verifications (1:N)
-
-outreach_leads ── outreach_events  (1:N, append-only)
-crawl_runs ── source_records       (1:N, raw audit trail)
+User ──┬── UserProfile              search defaults
+       ├── JobSearch ── SearchRun    what you asked for, and each execution
+       ├── Job ──┬── JobContact ── Contact ── Company
+       └── Application ── ApplicationEvent
 ```
 
 ## Tables
 
 ### `users`, `user_profile`
+A single local owner, created on first request. The profile holds search
+defaults only — target titles, locations, skills. This is a search workspace,
+not a résumé manager.
 
-One owner per installation. `user_profile` holds everything the AI drafter is
-permitted to draw on: name, headline, education, experience, `years_experience`,
-and JSONB lists for skills, target roles, target industries and preferred
-locations, plus portfolio/GitHub/LinkedIn URLs and résumé text.
+### `job_searches`
+What the user typed (`raw_query`, kept verbatim so the parse can be re-run) plus
+the criteria parsed out of it. `parse_method` records whether a model was
+involved, and `parse_notes` carries anything the parser wants to tell the user
+— both surfaced in the UI so a misreading can be corrected rather than guessed at.
 
-Personal data lives here, in rows — never hardcoded into application logic.
+### `search_runs`
+One execution. Append-only. Carries the whole funnel:
+
+```
+raw_found → duplicates_dropped → irrelevant_dropped → rejected
+                                                    → validated + unverified
+```
+
+plus `providers_queried`, `providers_skipped` (name → reason), `errors` and
+`notes`. This is what lets the app say *"41 retrieved, 12 duplicates, 21
+off-target, 4 failed validation, 4 shown"* instead of just showing four rows.
 
 ### `companies`
+Derived from postings, not curated. Unique on `normalized_name`.
 
-`company_name`, `normalized_name`, `company_domain`, `career_page_url`,
-`industry`, `priority`, `active`, `is_demo`, `created_at`, `last_checked_at`,
-`last_scan_status`, plus a cached `hiring_activity_score` and when it was
-computed.
-
-* `UNIQUE (user_id, normalized_name)` — the same company cannot be tracked twice
-  under cosmetic name variations (`Acme Inc.` vs `Acme`).
+- `domain` — confirmed by following a posting URL, never guessed from the name,
+  and never an IP address or a job board's own host.
+- `careers_url` — a confirmed Greenhouse/Lever/Ashby board, so later searches
+  skip the probing.
+- `contacts_checked_at` — when discovery last ran, so repeat searches do not
+  re-crawl the same pages.
 
 ### `jobs`
+One discovered posting. Nothing on this table is synthesised: an unknown field
+stays NULL rather than being filled with a plausible value.
 
-`title`, `normalized_title`, `description`, `location`, `normalized_location`,
-`employment_type`, `job_url`, `canonical_url`, `content_hash`, `source`,
-`source_job_id`, `posted_at`, `discovered_at`, `last_seen_at`, `status`,
-`is_demo`, `relevance_score`, `relevance_breakdown` (JSONB), `relevance_scored_at`.
+| Group | Columns |
+|---|---|
+| Identity | `canonical_url` (unique per user), `fingerprint`, `external_id` |
+| Content | `title`, `company_name`, `location`, `is_remote`, `department`, `salary_text`, `description`, `summary` |
+| Experience | `experience_text` (the phrase as printed), `min_years`, `max_years` — all NULL when the posting is silent |
+| Provenance | `source`, `source_query_url`, `job_url`, `apply_url`, `final_url`, `posted_at`, `discovered_at` |
+| Validation | `validation_status`, `validation_checks` (per-check outcome), `validation_reason`, `validated_at`, `http_status` |
+| Relevance | `relevance_score`, `relevance_breakdown`, `match_reasons` |
+| User state | `is_saved`, `is_dismissed` |
 
-* `UNIQUE (company_id, canonical_url)` — URL-level dedupe.
-* `INDEX (company_id, content_hash)` — content-level dedupe across sources.
-* `content_hash = sha256(normalised company | title | location)`, excluding the
-  URL on purpose, so one posting seen through two sources is one row.
-* `relevance_breakdown` stores the full explanation, not just the number, so the
-  UI can show why without recomputing.
-
-### `recruiters`
-
-`name`, `normalized_name`, `company_name`, `title`, `professional_profile_url`,
-`public_professional_email`, `email_source_url`, `email_source_type`,
-`email_confidence`, `email_confidence_score`, `email_verified`,
-`email_verification_status`, `email_verified_at`, `role_relevance`,
-`relevance_score`, `relevance_breakdown`, `do_not_contact`,
-`do_not_contact_reason`, `discovered_at`, `last_seen`, `is_demo`.
-
-* `UNIQUE (company_id, normalized_name)`.
-* `INDEX (do_not_contact)` — the recommendation engine filters on it in SQL.
-* The email fields are denormalised from `contacts` for query convenience; the
-  authoritative provenance is always the `contacts` row.
+Two independent dedupe keys: `uq_job_user_canonical_url` and the
+`(user_id, fingerprint)` index over (company, sorted title tokens, canonical city).
 
 ### `contacts`
+A person, a published inbox, or a directory search link — `role` says which, and
+`Contact.is_person` is the guard the UI uses.
 
-One row per discovered contact detail, **with its provenance**: `contact_type`,
-`value`, `source_url`, `source_type`, `source_excerpt`, `confidence`,
-`is_inferred`, `is_primary`, `first_seen`, `last_seen`.
+- `name` is **NULL** for an inbox or a search link. Giving either a person's name
+  would be the exact failure this product is built to avoid.
+- `dedupe_key` is name-first, then address. The same person is often found twice
+  — once in structured data with an address, once in visible text without — and
+  keying on the address would list them twice.
+- `email_status` ∈ `NONE | PUBLISHED_ATTRIBUTED | PUBLISHED_TEAM_ALIAS |
+  USER_PROVIDED`. There is deliberately **no value for a guessed address**.
+- `source`, `source_url` and `source_excerpt` answer *"where did this come
+  from?"* for every row.
 
-* `UNIQUE (recruiter_id, contact_type, value)`.
-* This table is why the product can always answer "where did this come from?".
-  An address with `is_inferred = true` has no `source_url` — by definition,
-  nothing published it.
+### `job_contacts`
+Which contacts were surfaced for which job, with `rank` (0 is best) and the
+`rationale` shown under the contact.
 
-### `job_recruiter_relationships`
+### `applications`
+The tracker, and the one table that must survive everything else.
 
-`job_id`, `recruiter_id`, `relation` (`POSTED_BY`, `COMPANY_TALENT_TEAM`,
-`FUNCTION_MATCH`, `LISTED_CONTACT`), `confidence`, `rationale`.
+`job_id` and `contact_id` are `ON DELETE SET NULL`, and the row carries its own
+copy of `job_title`, `company_name`, `location`, `job_url`, `source`,
+`contact_name`, `contact_title`, `contact_email` and `contact_profile_url`.
 
-* `UNIQUE (job_id, recruiter_id)`.
-* The `rationale` is a sentence shown in the UI. We never assert a connection we
-  cannot express in words.
+That duplication is the point. A posting comes down without notice, and that is
+precisely when you still need to know what you applied to and who you spoke to.
 
-### `hiring_signals`
+State lives in two independent columns:
 
-`signal_type`, `points`, `description`, `details` (JSONB), `detected_at`,
-optional `job_id`. These are the evidence behind a company's hiring activity
-score, and they drive the company timeline.
+- `status`: `SAVED → APPLIED → OUTREACH_SENT → INTERVIEW → REJECTED → OFFER → CLOSED`
+- `outreach_status`: `NOT_STARTED → EMAIL_SENT | LINKEDIN_SENT → REPLIED | NO_RESPONSE`
 
-### `outreach_leads`
+They are separate because contacting someone and applying are separate acts that
+happen in either order. Dates (`date_found`, `date_applied`, `outreach_sent_at`)
+are stamped by the service when the matching state is set, never inferred later.
 
-The queue. `status`, `outreach_priority`, `priority_band`, `priority_breakdown`,
-draft fields (`draft_subject`, `draft_body`, `draft_provider`, `draft_model`,
-`draft_generated_at`, `draft_edited_at`, `draft_approved`, `draft_approved_at`),
-and outreach records (`contacted_at`, `last_contact_at`, `contact_count`,
-`response_status`, `responded_at`, `notes`).
+### `application_events`
+Append-only history: created, status changed, outreach changed, contact set,
+fields updated. Never edited, never deleted.
 
-* **`UNIQUE (recruiter_id, job_id)`** — the database-level guarantee that the
-  same person cannot be queued twice for the same role.
-* `contacted_at` is written once and never overwritten; follow-ups increment
-  `contact_count` and move `last_contact_at`.
+## Enumerations
 
-### `outreach_events`
+Stored as `VARCHAR` with `native_enum=False`, so adding a value is an ordinary
+migration rather than a PostgreSQL type rewrite.
 
-Append-only history: `event_type`, `from_status`, `to_status`, `note`, `payload`
-(JSONB), `actor`, `created_at`. Never updated, never deleted. This is the
-"complete history" the product promises.
-
-### `email_verifications`
-
-One row per check: `email`, `status`, `confidence`, `provider`, `reason`,
-`raw_response`, `checked_at`. Keeping every check (rather than only the latest)
-means you can see an address degrade over time.
-
-### `crawl_runs`
-
-`collector`, `source`, `target_url`, `trigger`, `started_at`, `completed_at`,
-`status`, `records_found`, `records_added`, `records_updated`,
-`records_rejected`, `pages_fetched`, `bytes_downloaded`, `rate_limit_waits`,
-`rate_limit_seconds`, `error_count`, `errors` (JSONB), `notes`.
-
-The row is inserted **before** the first network call. A crawl that dies leaves
-a `RUNNING` or `FAILED` row; it can never vanish.
-
-### `source_records`
-
-Every raw item observed during a crawl — including the ones that were rejected
-and **why** (`accepted`, `reject_reason`, `raw_payload`). This is what makes the
-Admin page able to show "we saw 12 items, kept 9, and here is why the other 3
-were dropped".
-
-### `scoring_configs`, `taxonomy_terms`
-
-User-editable configuration. `scoring_configs` holds four JSONB weight maps plus
-an options map (thresholds and time windows). `taxonomy_terms` holds
-`(kind, term, aliases, weight, is_primary, active)` with
-`UNIQUE (user_id, kind, term)`.
-
-Kinds: `ROLE`, `INDUSTRY`, `SKILL`, `LOCATION`, `SENIORITY`, `EXCLUDE`.
-
-## Key enums
-
-| Enum | Values |
-| --- | --- |
-| `CompanyPriority` | CRITICAL, HIGH, MEDIUM, LOW |
-| `JobStatus` | OPEN, CLOSED, STALE, UNKNOWN |
-| `EmailConfidence` | HIGH, MEDIUM, LOW (inferred), NONE |
-| `VerificationStatus` | valid, invalid, risky, unknown, not_checked |
-| `OutreachStatus` | NEW, REVIEWED, APPROVED, CONTACTED, REPLIED, FOLLOW_UP, ARCHIVED, DO_NOT_CONTACT |
-| `SourceType` | CAREER_PAGE, CAREER_PAGE_JSONLD, GREENHOUSE/LEVER/ASHBY_PUBLIC_API, PUBLIC_JOB_FEED, COMPANY_TEAM_PAGE, JOB_POSTING_CONTACT, PATTERN_INFERENCE, MANUAL_ENTRY, DEMO_SEED |
-| `CrawlStatus` | RUNNING, SUCCESS, PARTIAL, BLOCKED, FAILED, SKIPPED |
-
-## Deletion behaviour
-
-Deleting a company cascades to its jobs, recruiters, contacts, signals, links
-and crawl runs. Leads are deleted explicitly first so the cascade cannot orphan
-them. Leads themselves are **archived rather than deleted** in the UI — the
-outreach history is the most valuable data in the system.
+`SourceType` has no value for a generated or inferred job. `EmailStatus` has no
+value for a guessed address. Where a rule can be made structural instead of
+procedural, it is.
 
 ## Migrations
 
+One migration, `0001_initial`, verified against the ORM metadata:
+
 ```bash
 alembic upgrade head
-alembic check                                    # asserted by the test suite
-alembic revision --autogenerate -m "add x"
+python -c "
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from app.db.session import get_engine
+from app.models import Base
+import app.models
+with get_engine().connect() as c:
+    print(compare_metadata(MigrationContext.configure(c), Base.metadata) or 'in sync')"
 ```
-
-`migrations/env.py` reads `DATABASE_URL` from application settings, so no
-credential is ever written into `alembic.ini`.

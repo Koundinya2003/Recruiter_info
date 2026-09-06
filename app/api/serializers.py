@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.application import Application
 from app.models.contact import Contact, JobContact
+from app.models.enums import SourceType
 from app.models.job import Job
 from app.models.user import User
 from app.schemas.application import ApplicationOut
@@ -116,6 +117,16 @@ def job_out(session: Session, user: User, job: Job, *, detail: bool = False) -> 
     )
 
 
+def _source_label(value: str | None) -> str | None:
+    """The readable name of a source, tolerating a value from an older row."""
+    if not value:
+        return None
+    try:
+        return SourceType(value).label
+    except ValueError:
+        return value.replace("_", " ").title()
+
+
 def application_out(application: Application) -> ApplicationOut:
     return ApplicationOut(
         id=application.id,
@@ -126,6 +137,7 @@ def application_out(application: Application) -> ApplicationOut:
         location=application.location,
         job_url=application.job_url,
         source=application.source,
+        source_label=_source_label(application.source),
         contact_name=application.contact_name,
         contact_title=application.contact_title,
         contact_email=application.contact_email,

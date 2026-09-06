@@ -190,3 +190,31 @@ class TestDomainExtraction:
     )
     def test_a_third_party_host_is_not_the_employer(self, url: str) -> None:
         assert domain_from_url(url) is None
+
+
+class TestBudgetAndHosts:
+    def test_a_bare_ip_is_never_treated_as_a_company_domain(self) -> None:
+        assert domain_from_url("http://127.0.0.1/jobs/1") is None
+        assert domain_from_url("http://192.168.1.5:8080/careers") is None
+        assert domain_from_url("http://[::1]/jobs") is None
+        assert domain_from_url("http://localhost/jobs") is None
+
+    def test_refused_pages_still_consume_the_budget(self, client, monkeypatch) -> None:
+        """A site that refuses everything must not cost more than one that answers."""
+        from app.collectors.http_client import FetchBlocked
+
+        attempts: list[str] = []
+
+        def always_blocked(url: str, **kwargs):
+            attempts.append(url)
+            raise FetchBlocked("nope", reason="robots_disallowed")
+
+        monkeypatch.setattr(client, "fetch", always_blocked)
+        discover_contacts(
+            client,
+            company_name="Acme",
+            company_domain="acme.example",
+            careers_url=None,
+            max_pages=3,
+        )
+        assert len(attempts) == 3

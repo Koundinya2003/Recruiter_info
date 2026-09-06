@@ -47,9 +47,14 @@ STATUSES = [
 ]
 OUTREACH = ["NOT_STARTED", "EMAIL_SENT", "LINKEDIN_SENT", "REPLIED", "NO_RESPONSE"]
 
+
+def _label(value: str) -> str:
+    """Enum values are storage; people read words."""
+    return value.replace("_", " ").capitalize()
+
 with st.sidebar:
     st.markdown("### Filter")
-    status_filter = st.selectbox("Status", ["All", *STATUSES])
+    status_filter = st.selectbox("Status", ["All", *STATUSES], format_func=_label)
     open_only = st.toggle("Open only", value=False)
     due_only = st.toggle("Follow-up due", value=False)
     term = st.text_input("Role or company")
@@ -89,7 +94,7 @@ for application in applications:
                 f"<div class='jw-title'>{escape(application['job_title'])}</div>"
                 f"<div class='jw-company'>{escape(application['company_name'])}</div>"
                 f"<div class='jw-meta'>{escape(application.get('location') or 'Location not stated')}"
-                f" · {escape(application.get('source') or 'source not recorded')}</div>",
+                f" · {escape(application.get('source_label') or 'source not recorded')}</div>",
                 unsafe_allow_html=True,
             )
             st.markdown(
@@ -154,12 +159,14 @@ for application in applications:
                     "Status",
                     STATUSES,
                     index=STATUSES.index(application["status"]),
+                    format_func=_label,
                     key=f"status-{application['id']}",
                 )
                 outreach = st.selectbox(
                     "Outreach",
                     OUTREACH,
                     index=OUTREACH.index(application["outreach_status"]),
+                    format_func=_label,
                     key=f"outreach-{application['id']}",
                 )
                 current_follow_up = application.get("follow_up_date")

@@ -303,11 +303,21 @@ def _collect(
             )
 
     outcome.raw_found = len(candidates)
-    if not candidates and not outcome.errors:
-        usable = [s.label for s in provider_statuses() if s.usable]
-        outcome.notes.append(
-            "No postings came back from " + (", ".join(usable) or "any source") + "."
-        )
+    # Collapse repeats so one broken network does not read as many problems.
+    outcome.errors = list(dict.fromkeys(outcome.errors))
+
+    if not candidates:
+        if outcome.errors:
+            outcome.notes.append(
+                "Every source that was queried failed. These are public APIs, so this "
+                "usually means the machine running the API has no outbound internet "
+                "access, rather than that no jobs matched."
+            )
+        else:
+            usable = [s.label for s in provider_statuses() if s.usable]
+            outcome.notes.append(
+                "No postings came back from " + (", ".join(usable) or "any source") + "."
+            )
     return candidates
 
 

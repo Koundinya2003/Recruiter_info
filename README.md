@@ -1,392 +1,197 @@
-# Recruiter Outreach Intelligence
+# Job Search & Outreach Workspace
 
-A research and outreach intelligence tool that answers one question well:
-
-> **Who should I contact today about a role that is actively hiring?**
-
-It follows a single chain end to end:
+Describe the roles you want in plain English. The workspace searches public job
+APIs and companies' own job boards for **real, currently open postings**, checks
+each one before showing it, finds publicly published people at those companies
+who could be contacted about the role, and tracks every application you make.
 
 ```
-Company → Hiring signal → Relevant job → Relevant recruiter
-        → Public professional contact → Verification
-        → Outreach priority → Personalised draft → Your approval
+Search  →  Review a validated posting  →  Open it  →  Apply  →  Contact someone  →  Track
 ```
 
-This is **not** a mass-emailing platform. It never sends email. It prepares a
-short, specific draft that you read, edit, approve, and send yourself from your
-own mail client — then you record that you sent it, so the same person is never
-contacted twice about the same role.
+> **“Find Associate Product Manager roles for 0–2 years of experience in
+> Bangalore and Hyderabad.”**
+>
+> → Adzuna, The Muse and matching Greenhouse/Lever/Ashby boards are queried
+> → duplicates collapsed, off-target roles dropped
+> → each survivor fetched and checked: link works, company matches, role still open
+> → contacts found from the company's own pages
+> → the ones that pass are shown, each with its verdict and who to contact.
 
----
+## What it will not do
 
-## What it optimises for
+These are product decisions, enforced in code and covered by tests:
 
-| Not this | This |
-| --- | --- |
-| How many recruiter emails can I collect? | How accurately can I identify the right person to contact, about a relevant role, at the right time? |
-| A massive database | A fresh hiring signal |
-| A guessed address | A verified, publicly published professional contact |
-| Automated bulk sending | Explicit human approval, one lead at a time |
-| A mysterious AI score | An explainable score, with every reason shown |
+| It will never | Because |
+|---|---|
+| Invent a job, company, person, email or URL | Every record traces to a provider response or a page URL it cites |
+| Guess an email from a name and a domain | Verifying that a domain accepts mail says nothing about whether the mailbox is that person's. There is no `INFERRED` value in `EmailStatus` at all |
+| Show a posting it has not checked | Validation runs before display; anything unchecked is withheld, not shown with a shrug |
+| Claim a check passed that did not | "Could not confirm" is a first-class outcome with its own badge, distinct from "verified active" |
+| Read anything behind a login | LinkedIn member data included. Where a person cannot be found publicly, you get a **search link** you run yourself |
+| Work around a site that declines access | A 403 or a robots.txt disallow is a terminal, logged outcome — never a retry in disguise |
+| Apply or send a message for you | It opens the employer's page and puts an address on your clipboard. You decide the rest |
 
----
+## Quick start
 
-## Screenshots
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env                 # every integration in it is optional
+
+createdb roi                         # PostgreSQL 14+
+alembic upgrade head
+
+uvicorn app.main:app --reload        # API   → http://localhost:8000/docs
+streamlit run frontend/Dashboard.py  # UI    → http://localhost:8501
+```
+
+No API key is needed to start. The Muse, Remotive, Arbeitnow, Jobicy and
+companies' own job boards all work unauthenticated; the **Sources** page shows
+what is ready and what a key would add.
+
+## Screens
 
 | | |
-| --- | --- |
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Companies](docs/screenshots/companies.png) |
-| **Dashboard** — the ranked "contact today" shortlist | **Companies** — tracking, scanning, hiring activity |
-| ![Recruiters](docs/screenshots/recruiters.png) | ![Admin](docs/screenshots/admin.png) |
-| **Recruiters** — contacts with full provenance | **Admin** — every crawl, error and rate-limit wait |
+|---|---|
+| **Jobs** — a posting, its verdict, its contacts and your next step on one card | **Applications** — the tracker |
+| ![Jobs](docs/screenshots/jobs.png) | ![Applications](docs/screenshots/applications.png) |
+| **Dashboard** — where everything stands | **Sources** — what is wired up |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Sources](docs/screenshots/sources.png) |
 
-Also included: [Jobs](docs/screenshots/jobs.png),
-[Outreach](docs/screenshots/outreach.png),
-[Profile](docs/screenshots/profile.png),
-[Settings](docs/screenshots/settings.png).
+## Job sources
 
----
+| Source | Coverage | Credentials |
+|---|---|---|
+| **Company job boards** | Greenhouse, Lever and Ashby boards belonging to companies you name | None |
+| **Adzuna** | Aggregated postings across 19 countries, India included | Free — [developer.adzuna.com](https://developer.adzuna.com/signup) |
+| **The Muse** | Curated employer postings | Optional key raises the rate limit |
+| **Remotive** | Remote-only postings | None |
+| **Arbeitnow** | European and remote postings | None |
+| **Jobicy** | Remote-only postings, by region | None |
+| **USAJobs** | US federal government postings | Free — [developer.usajobs.gov](https://developer.usajobs.gov/apirequest/) |
 
-## Responsible data collection policy
+Company job boards are the best of these: they are the employer's own live
+listings, so a posting that comes back is one the company is advertising right
+now. Board identifiers are never assumed — a slug is derived from the company
+name, probed against the real API, and used only once the endpoint answers.
+A wrong guess produces *“No public board found for X”*, never a fabricated board.
 
-This is the part of the design that is not negotiable.
+For searches that name no company, the boards in
+[`app/data/company_boards.json`](app/data/company_boards.json) are used. That
+file is a starting point meant to be edited, and every entry in it is still
+probed live before use.
 
-**The tool only reads information that is publicly accessible or served by an
-official, documented API.** Concretely:
+## How a search works
 
-* Jobs come from **official public ATS APIs** (Greenhouse, Lever, Ashby job
-  board endpoints, which exist so anyone can render a company's open roles) and
-  from **`schema.org/JobPosting` structured data** that companies publish on
-  their own career pages for exactly this purpose.
-* Recruiter contacts come only from pages a company published: `mailto:` links,
-  JSON-LD `Person` entries, and visible text on careers/team pages.
-* Every stored contact detail keeps its **source URL and source type**, so you
-  can always see where a piece of information came from.
+1. **Read the request.** A rule-based parser extracts role, experience range,
+   locations, companies, industries, skills and exclusions. It needs no API key.
+   When one is configured, a model may *fill gaps the rules left* — it can never
+   overwrite a value the rules took from an explicit phrase, and a location it
+   suggests is accepted only if the gazetteer recognises it.
+2. **Query every usable source.** A source that needs credentials is skipped
+   *with its reason recorded on the run*, never quietly replaced.
+3. **Collapse duplicates.** By canonical URL and by a fingerprint of
+   (company, sorted title tokens, canonical city) — so the same role on three
+   boards is one row, and the employer's own copy wins.
+4. **Score against the request.** Title, location, experience, keywords,
+   company and industry. Constraints you stated outright are **hard gates**: a
+   perfect title cannot carry a posting past the wrong city or an experience
+   requirement you ruled out. "Unknown" never trips a gate — only a stated value
+   that contradicts you.
+5. **Validate the survivors.** Each is fetched and put through three recorded
+   checks: the URL works, the page belongs to the stated company, the role is
+   still open. Validation runs *after* scoring so the request budget is spent on
+   postings you might actually want.
+6. **Find contacts** for each company, once, cached across searches.
+7. **Persist**, with every dropped posting counted and explained.
 
-**The tool refuses to do any of the following, and there is no flag to turn them
-on:** CAPTCHA solving, login or session scraping, paywall bypass, anti-bot
-evasion, scraping private profiles or messages, credential harvesting, rate-limit
-evasion, proxy rotation for block circumvention, stealth/undetectable scraping,
-collecting personal mailbox addresses, automated bulk unsolicited email, or
-scraping LinkedIn behind authentication.
+### Validation outcomes
 
-**When a site says no, we stop.** A `401`, `403`, `429` or a `Disallow` in
-`robots.txt` ends the fetch, is logged, and is surfaced on the Admin page as a
-`BLOCKED` crawl. It is never retried in disguise.
+| Outcome | Shown? | Meaning |
+|---|---|---|
+| **Verified active** | Yes | Fetched, company confirmed, role confirmed open |
+| **Reachable, active** | Yes | Page loads and looks live; one check inconclusive |
+| **Could not confirm** | Yes, labelled | The site declined the check. This says nothing about the job — open the link yourself |
+| Closed or expired | No | The page says so, or its own `validThrough` date has passed |
+| Link does not work | No | 404 or 410 |
+| Belongs to another company | No | The page's structured data names a different employer |
 
-What the crawler does instead:
+## Contacts
 
-* honours `robots.txt`, including `Crawl-delay`;
-* identifies itself with a real, configurable User-Agent;
-* waits a configurable delay between requests to the same domain;
-* enforces request timeouts, a retry budget with exponential backoff (transient
-  failures only), a page budget per run, and a response size cap;
-* validates every URL against SSRF before fetching, and re-validates every
-  redirect hop;
-* records every run — including the ones that found nothing — in `crawl_runs`.
+For each validated job, in the order they are trusted:
 
-### Inferred addresses are never "found" addresses
+1. **The posting itself** — a named contact or published application address.
+2. **The company's own pages** — careers, team and about pages, read for people
+   with hiring-related titles, with their published addresses.
+3. **A published team inbox** (`careers@`, `talent@`) — recorded as an inbox,
+   never given a person's name.
+4. **A directory search link** — a LinkedIn people-search URL you run in your
+   own session. It names nobody and asserts nothing, which is exactly why it is
+   safe to offer when a company publishes no one.
 
-Pattern-based email inference exists, is **opt-in per scan**, and produces
-records that are permanently labelled:
+Every contact carries the URL it was read from. Personal mailboxes (gmail,
+outlook) are never collected, even when published. An address on a domain that
+is not the company's is rejected.
 
-* confidence is fixed at `LOW`, source type `PATTERN_INFERENCE`, no source URL;
-* `email_verified` can never become true for them, even after a check succeeds;
-* the UI renders them as **"INFERRED — not published"** in a distinct colour
-  everywhere they appear.
+When nothing is found, the app says so plainly rather than filling the gap.
 
-A domain accepting mail tells you nothing about whether you guessed the right
-person's mailbox, and the product says so rather than implying otherwise.
+## The tracker
 
----
+`Saved → Applied → Outreach Sent → Interview → Rejected → Offer → Closed`,
+with a separate outreach state (`Not started / Email sent / LinkedIn sent /
+Replied / No response`), notes and a follow-up date.
 
-## Architecture
+Statuses move only when you move them. Each application **snapshots** the job
+and contact when it is created, so the row keeps working after the posting comes
+down — which is exactly when a tracker matters most.
+
+## Layout
 
 ```
 app/
-├── main.py                  FastAPI app: middleware, error handling, routers
-├── config.py                Settings from the environment; every integration optional
-├── api/
-│   ├── deps.py              DB session, API-key auth, current user
-│   └── routes/              companies · jobs · recruiters · outreach · dashboard
-│                            · settings · admin
-├── models/                  SQLAlchemy models (16 tables)
-├── schemas/                 Pydantic request/response models + validation
-├── services/
-│   ├── scan.py              The orchestrator: collect → ingest → score → link
-│   ├── scoring/             job_relevance · hiring_activity · recruiter_relevance
-│   │                        · outreach_priority · weights · context
-│   ├── jobs/                ingest + cross-source duplicate detection
-│   ├── recruiters/          ingest · linking · pattern inference
-│   ├── email/               verifier providers + persistence
-│   ├── ai/                  LLM provider abstraction + email generation
-│   ├── outreach/            state machine, approval gate, duplicate prevention
-│   └── crawl_tracking.py    crawl run lifecycle and source records
-├── collectors/
-│   ├── http_client.py       the single guarded fetcher (SSRF · robots · limits)
-│   ├── base.py              BaseCollector: collect/normalize/deduplicate/validate
-│   ├── job_sources/         Greenhouse · Lever · Ashby public APIs
-│   ├── career_pages/        JSON-LD first, link discovery second
-│   └── public_sources/      published talent contacts
-├── security/                url_guard (SSRF) · rate_limit · robots
-├── db/                      base · session · demo seed
-├── workers/                 APScheduler background scans
-└── utils/                   text normalisation · dates · HTML
-frontend/                    Streamlit UI (a pure API client)
-tests/                       unit · integration · security (257 tests)
-docs/                        architecture · data-model · collectors · scoring
-                             · security · development
+  search/         gazetteer, experience parsing, JobQuery, NL parser, relevance
+  providers/      one module per job source, plus the registry
+  services/       discovery pipeline · validation · contacts · applications
+  models/         User · Company · JobSearch/SearchRun · Job · Contact · Application
+  api/routes/     search · jobs · contacts · applications · dashboard · system
+  security/       SSRF guard · robots.txt · rate limiting
+  collectors/     the single guarded HTTP client everything fetches through
+frontend/         Streamlit: Dashboard · Search · Jobs · Applications · Sources
 ```
 
-The Streamlit frontend talks to the backend **only over HTTP**, so replacing it
-with React/Next.js means pointing a new client at the same API.
+The API is the whole product surface; the Streamlit UI is one client of it, so a
+different frontend can be swapped in without touching the backend.
 
-Full detail: [docs/architecture.md](docs/architecture.md).
+## Configuration
 
----
+Everything is environment-driven; see [`.env.example`](.env.example). Useful knobs:
 
-## Setup
-
-### Requirements
-
-* Python 3.11+
-* PostgreSQL 14+
-
-### Install
-
-```bash
-git clone <this repository>
-cd Recruiter_info
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Database
-
-```bash
-createuser roi --pwprompt          # or use an existing role
-createdb -O roi roi
-createdb -O roi roi_test           # for the test suite
-```
-
-### Configure
-
-```bash
-cp .env.example .env
-$EDITOR .env                       # set DATABASE_URL at minimum
-```
-
-**Every third-party integration is optional.** With no API keys at all, the app
-starts and the entire workflow runs: email verification falls back to local
-DNS/MX checks, and email drafting falls back to a deterministic offline
-template.
-
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | **yes** | PostgreSQL connection string |
-| `OWNER_EMAIL` | no | Identifies the single local user (default `owner@localhost`) |
-| `API_KEY` | no | When set, every `/api` request needs `X-API-Key`. Empty = local no-auth |
-| `OPENROUTER_API_KEY` | no | Enables LLM drafting. Empty → offline template drafter |
-| `OPENROUTER_BASE_URL` | no | Any OpenAI-compatible endpoint (default OpenRouter) |
-| `OPENROUTER_MODEL` | no | Model id, e.g. `anthropic/claude-3.5-sonnet` |
-| `EMAIL_VERIFICATION_PROVIDER` | no | `dns` (default, local) · `null` · `http` |
-| `EMAIL_VERIFICATION_API_KEY` / `_API_URL` | no | For the `http` provider |
-| `CRAWLER_USER_AGENT` | no | Identify yourself honestly; include a contact URL |
-| `CRAWLER_DOMAIN_DELAY_SECONDS` | no | Politeness delay per domain (default 2.0) |
-| `CRAWLER_MAX_PAGES_PER_RUN` | no | Hard crawl budget (default 25) |
-| `CRAWLER_RESPECT_ROBOTS` | no | Leave `true` |
-| `CRAWLER_ALLOW_PRIVATE_NETWORKS` | no | **Must stay `false`** outside tests (SSRF) |
-| `SCHEDULER_ENABLED` | no | Background scans via APScheduler |
-| `API_RATE_LIMIT_PER_MINUTE` | no | Protects this app's own API |
-
-### Migrations
-
-```bash
-alembic upgrade head           # apply
-alembic check                  # confirm models and migrations agree
-alembic revision --autogenerate -m "describe the change"
-```
-
-### Run
-
-Two processes:
-
-```bash
-# Terminal 1 — API on :8000
-uvicorn app.main:app --reload
-
-# Terminal 2 — UI on :8501
-streamlit run frontend/Dashboard.py
-```
-
-Then open <http://localhost:8501>. API docs are at <http://localhost:8000/docs>.
-
-### Demo mode
-
-```bash
-python scripts/seed_demo.py            # load synthetic data
-python scripts/seed_demo.py --reset    # rebuild it
-python scripts/seed_demo.py --clear    # remove it (real data untouched)
-```
-
-Demo records are flagged `is_demo`, carry a **`[DEMO]`** marker in their names,
-and every address uses the RFC 2606 reserved `.example` TLD, which cannot
-resolve and cannot deliver mail. There is no path by which demo data can cause
-an email to reach a real person.
-
-> Because `.example` domains genuinely do not exist, clicking **Verify** on a
-> demo contact correctly reports `invalid`. That is the verifier being honest,
-> not a bug.
-
----
-
-## Using it
-
-1. **Add a company** (Companies page). A Greenhouse/Lever/Ashby board URL gives
-   the best results because those are official APIs; otherwise use the company's
-   own careers page.
-2. **Run a scan.** Jobs are discovered, deduplicated, and scored; publicly
-   published talent contacts are collected with their sources; hiring signals
-   and the company's hiring activity score are recomputed.
-3. **Read the dashboard.** The "contact today" list ranks (job, recruiter) pairs
-   by outreach priority. Open any row to see every reason behind the number.
-4. **Verify an address** on the Recruiters page before relying on it.
-5. **Add a lead** to the outreach queue.
-6. **Generate a draft**, edit it until it sounds like you, then **approve** it.
-   Editing an approved draft revokes approval — you always approve exactly what
-   you send.
-7. **Send it yourself**, then click *"I sent this — record it"*. That pair
-   disappears from recommendations and cannot be contacted again by accident.
-8. **Mark anyone `DO NOT CONTACT`** at any time. They are removed from
-   recommendations, their leads are retired, and new leads for them are refused.
-
----
+| Setting | Default | What it does |
+|---|---|---|
+| `SEARCH_MIN_RELEVANCE` | `35` | Below this, a posting is dropped as off-target |
+| `SEARCH_RESULT_LIMIT` | `40` | Postings kept per search |
+| `VALIDATION_MAX_JOBS` | `40` | Hard cap on live validation fetches per search |
+| `CONTACTS_MAX_COMPANIES` | `10` | Companies contact discovery will crawl per search |
+| `CONTACTS_CACHE_HOURS` | `168` | Do not re-crawl a company's pages this often |
+| `CRAWLER_RESPECT_ROBOTS` | `true` | Leave it on. Turning it off is your responsibility |
+| `API_KEY` | empty | Set it and every `/api` route requires `X-API-Key` |
 
 ## Testing
 
 ```bash
-pytest                       # the whole suite
-pytest tests/unit            # fast, no database needed for most
-pytest tests/security -v     # SSRF, injection, auth, secrets
-pytest -m integration        # database + collector flows
+pytest                    # 236 tests
+ruff check . && mypy app
 ```
 
-**257 tests**, split into:
-
-* **unit** — normalisation, duplicate detection, all four scoring engines,
-  outreach state transitions, verification providers, AI drafting guardrails;
-* **integration** — collectors against a local mock site, the database ingest
-  and dedupe flow, crawl-run tracking, demo-data safety, migration parity, and
-  the complete API workflow;
-* **security** — 25+ SSRF payloads, SQL injection across every search and filter,
-  input validation, API-key auth, and secret-leakage checks.
-
-The suite is **fully offline**: no test contacts a real website. External sites
-are stood in for by `tests/fixtures/mock_server.py`, which serves canned ATS
-JSON, a JSON-LD career page, a team page, plus `robots.txt`, 403 and redirect
-endpoints.
-
-Quality gates:
-
-```bash
-ruff check app/ tests/ scripts/ frontend/
-mypy app/
-```
-
----
-
-## Supported sources
-
-| Source | Access method | Notes |
-| --- | --- | --- |
-| Greenhouse | `boards-api.greenhouse.io` public board API | Official, unauthenticated, authoritative |
-| Lever | `api.lever.co/v0/postings` public API | Official, unauthenticated, authoritative |
-| Ashby | `api.ashbyhq.com/posting-api/job-board` | Official, unauthenticated, authoritative |
-| Company career pages | `schema.org/JobPosting` JSON-LD | Preferred; published for aggregators |
-| Company career pages | Job-detail link discovery | Fallback, budget-limited |
-| Careers / team pages | `mailto:` links, JSON-LD `Person`, visible text | Recruiter contacts, with provenance |
-| Pattern inference | Derived from an address the company published | Opt-in, always `LOW`, never verified |
-
-"Authoritative" means the source lists *all* current openings, so a job that
-disappears can safely be marked `CLOSED`. Partial sources never close jobs.
-
----
-
-## Limitations
-
-* **Client-side career pages.** If a company renders its listings purely in
-  JavaScript and publishes no structured data, nothing is discovered. The scan
-  says so explicitly and suggests using the ATS board URL. We do not run a
-  headless browser to work around a site's choices.
-* **Most companies do not publish recruiter addresses.** Empty recruiter results
-  are the normal case, not a failure. The alternative — guessing — is exactly
-  what this tool refuses to present as fact.
-* **LinkedIn is out of scope entirely.** No authenticated scraping, no member
-  data. You can store a public profile URL you found yourself.
-* **DNS verification cannot confirm a mailbox.** It proves a domain accepts mail
-  and that syntax is valid. It reports `risky` for shared role addresses rather
-  than overclaiming `valid`.
-* **Single user.** One owner per installation; there is a `users` table and
-  every query is scoped by user, but there is no multi-tenant auth.
-* **In-process rate limiting.** Politeness state is per-process, which is
-  correct for a single-user tool and would need shared state if it were ever
-  scaled out.
-* **Restricted networks.** In a sandbox that allowlists outbound hosts, live ATS
-  endpoints are unreachable and scans are recorded as `BLOCKED` — visible on the
-  Admin page rather than failing silently.
-
----
-
-## Security
-
-* Secrets come from the environment only; `.env` is git-ignored and
-  `.env.example` ships with empty placeholders (a test asserts this).
-* **SSRF protection** on every outbound URL: scheme allowlist, no embedded
-  credentials, blocked internal hostnames, port allowlist, and DNS resolution
-  with rejection of loopback/private/link-local/CGNAT/metadata addresses.
-  Redirect hops are re-validated individually.
-* SQL injection is structurally prevented by SQLAlchemy parameterisation, and
-  covered by tests that fire injection payloads at every search and filter.
-* Input and output validation via Pydantic on every route.
-* Optional API-key auth with constant-time comparison; per-client rate limiting.
-* Errors return safe messages with a request id; internals, stack traces and the
-  database URL never reach a response body.
-* Structured logging via `structlog`, with a request id bound to every log line.
-* Security headers: `X-Content-Type-Options`, `X-Frame-Options`,
-  `Referrer-Policy`.
-
-More detail: [docs/security.md](docs/security.md).
-
----
-
-## Roadmap
-
-* Additional official job sources (Workday, SmartRecruiters, Recruitee public APIs).
-* Richer hiring signals: headcount trends, funding announcements from public feeds.
-* A React/Next.js frontend against the existing API.
-* Résumé parsing from PDF/DOCX rather than pasted text.
-* Follow-up scheduling with reminders.
-* Per-company response-rate analytics to learn which framing actually works.
-
----
+The suite is fully offline — a local mock server stands in for every job source
+and career site, so provider parsing, validation outcomes, contact provenance
+and the whole API workflow are exercised without a single real request.
 
 ## Documentation
 
-| Document | Contents |
-| --- | --- |
-| [docs/architecture.md](docs/architecture.md) | Layers, request flow, design decisions |
-| [docs/data-model.md](docs/data-model.md) | All 16 tables, relationships, key constraints |
-| [docs/collectors.md](docs/collectors.md) | Collector contract, sources, crawl policy |
-| [docs/scoring.md](docs/scoring.md) | All four scoring engines with worked examples |
-| [docs/security.md](docs/security.md) | Threat model and every control |
-| [docs/development.md](docs/development.md) | Local workflow, testing, adding a collector |
-
----
-
-## Licence
-
-Provided as-is for personal job-search use. You are responsible for complying
-with the terms of service of any site you point it at, and with the applicable
-law on unsolicited contact where you live.
+- [Architecture](docs/architecture.md) — the pipeline, module by module
+- [Data model](docs/data-model.md) — tables, keys and why the tracker snapshots
+- [Sources](docs/sources.md) — every provider, its payload shape and its limits
+- [Security](docs/security.md) — SSRF, robots, rate limiting, secrets
+- [Development](docs/development.md) — setup, migrations, adding a source
